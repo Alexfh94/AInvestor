@@ -80,7 +80,10 @@ def _extract_cursor_cli_response(stdout: str) -> str:
     return _parse_cursor_cli_stdout(stdout)[0]
 
 
-CYCLE_PROMPT_TEMPLATE = """You are AInvestor, a multi-asset trading analysis agent (crypto spot, perpetuals, stocks).
+CYCLE_PROMPT_TEMPLATE = """You are AInvestor, a multi-asset trading analysis agent (crypto spot and perpetuals).
+
+## Portfolio profile: {profile_label}
+{profile_instructions}
 
 Analyze the context in layers: MACRO → SECTOR → PAIR/ASSET → EXECUTION.
 
@@ -117,11 +120,11 @@ Analyze the context in layers: MACRO → SECTOR → PAIR/ASSET → EXECUTION.
 - Take-profit must exceed round-trip fees
 - Required stop-loss and take-profit on every buy/open
 - Crypto whitelist: {whitelist}
-- Stocks whitelist: {stocks_whitelist}
+- Stocks: disabled for this profile
 - Max leverage perpetuals: {max_leverage}x (MiFID retail cap)
 - Max {max_trades} trades per day | Min order: {min_order} USDT
 - Perps: only short if funding favorable; no perp+spot same asset without hedge
-- Stocks: only when US market open ({market_status})
+- Crypto spot and perpetuals only (no stocks)
 {mcp_instruction}
 
 ## Instructions
@@ -152,6 +155,21 @@ Spot buy = long only. Perpetual short uses action "sell" with position_side "sho
 """
 
 
+PROFILE_PROMPT_INSTRUCTIONS = {
+    "conservative": (
+        "CONSERVATIVE profile: prioritize capital preservation. Favor BTC/ETH as anchors. "
+        "Require high conviction (>=75) for alts. Prefer hold when signals are mixed. "
+        "Use moderate sizing (5-15% amount_pct). Perps only with 1x leverage and clear edge."
+    ),
+    "aggressive": (
+        "AGGRESSIVE / GAMBLER profile: maximize upside in liquid altcoins only (no BTC/ETH). "
+        "Be bold — when momentum and conviction align (>=70), size 60-100% (all-in OK). "
+        "Use 2x leverage on perps when edge is clear. Prefer action over hold. "
+        "Accept higher drawdown for bigger wins; stack perps on strong setups."
+    ),
+}
+
+
 def build_cycle_prompt(
     portfolio_summary: str,
     market_summary: str,
@@ -164,15 +182,17 @@ def build_cycle_prompt(
     derivatives_summary: str = "",
     market_status: str = "",
     use_mcp: bool = False,
+    profile: str = "conservative",
 ) -> str:
     from ainvestor.engine.risk import max_position_pct_for_conviction
+    from ainvestor.portfolio.profiles import PROFILE_LABELS, normalize_profile
 
+    prof = normalize_profile(profile)
     pos = risk_config["position"]
     fees = risk_config.get("fees", {})
     fee_rate = float(fees.get("fallback_taker_rate", 0.001))
     exchange = fees.get("exchange", "binance")
     deriv = risk_config.get("derivatives", {})
-    stocks = risk_config.get("assets", {}).get("stocks", [])
 
     mcp_instruction = (
         "- Use MCP tools to get additional data if needed before deciding."
@@ -181,6 +201,8 @@ def build_cycle_prompt(
     )
 
     return CYCLE_PROMPT_TEMPLATE.format(
+        profile_label=PROFILE_LABELS.get(prof, prof),
+        profile_instructions=PROFILE_PROMPT_INSTRUCTIONS.get(prof, ""),
         macro_summary=macro_summary or "No macro data.",
         portfolio_summary=portfolio_summary,
         market_summary=market_summary,
@@ -197,7 +219,6 @@ def build_cycle_prompt(
         exchange=exchange,
         min_order=pos["min_order_value_usdt"],
         whitelist=", ".join(risk_config["whitelist"]["pairs"]),
-        stocks_whitelist=", ".join(stocks) if stocks else "none",
         max_leverage=deriv.get("max_leverage", 2),
         max_trades=risk_config["limits"]["max_trades_per_day"],
         market_status=market_status or "unknown",

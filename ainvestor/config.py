@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -77,7 +78,58 @@ def get_settings() -> Settings:
     return Settings()
 
 
-def load_risk_config(path: Path | None = None) -> dict:
+def _read_risk_yaml(path: Path | None = None) -> dict:
     config_path = path or get_settings().risk_config_path
     with open(config_path, encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        return yaml.safe_load(f) or {}
+
+
+def load_risk_config(path: Path | None = None, profile: str | None = None) -> dict:
+    """Load risk config, optionally merged for a portfolio profile."""
+    from ainvestor.portfolio.profiles import DEFAULT_PROFILE
+
+    raw = _read_risk_yaml(path)
+    if "profiles" not in raw:
+        return raw
+
+    prof = profile or DEFAULT_PROFILE
+    if prof not in raw["profiles"]:
+        prof = DEFAULT_PROFILE
+
+    merged: dict = {}
+    for key in ("fees", "stops", "allocation", "modes", "ibkr", "version"):
+        if key in raw:
+            merged[key] = copy.deepcopy(raw[key])
+
+    profile_cfg = copy.deepcopy(raw["profiles"][prof])
+    for key, value in profile_cfg.items():
+        if key in ("initial_balance_usdt", "prompt_style"):
+            merged[key] = value
+        else:
+            merged[key] = copy.deepcopy(value)
+
+    merged["_profile"] = prof
+    return merged
+
+
+def get_all_market_pairs(path: Path | None = None) -> list[str]:
+    """Union of crypto whitelists across all profiles (for market data collection)."""
+    from ainvestor.portfolio.profiles import PROFILES
+
+    raw = _read_risk_yaml(path)
+    if "profiles" not in raw:
+        return raw.get("whitelist", {}).get("pairs", [])
+
+    pairs: list[str] = []
+    seen: set[str] = set()
+    for prof in PROFILES:
+        for pair in raw["profiles"].get(prof, {}).get("whitelist", {}).get("pairs", []):
+            if pair not in seen:
+                seen.add(pair)
+                pairs.append(pair)
+    return pairs
+
+
+def get_profile_initial_balance(profile: str, path: Path | None = None) -> float:
+    cfg = load_risk_config(path, profile=profile)
+    return float(cfg.get("initial_balance_usdt", get_settings().paper_initial_balance))

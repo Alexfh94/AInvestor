@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from ainvestor.config import get_settings
 from ainvestor.db.models import AIDecision, DecisionOutcome
 from ainvestor.models.schemas import CycleDecision, TradeProposal
+from ainvestor.portfolio.profiles import DEFAULT_PROFILE, normalize_profile
 
 logger = logging.getLogger(__name__)
 
@@ -23,9 +24,10 @@ OUTCOME_NEUTRAL = "neutral"
 class DecisionLearning:
     """Registra decisiones, evalúa resultados y genera contexto para ciclos futuros."""
 
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, profile: str = DEFAULT_PROFILE):
         self.db = db
         self.settings = get_settings()
+        self.profile = normalize_profile(profile)
 
     def record_cycle(
         self,
@@ -41,6 +43,7 @@ class DecisionLearning:
             self.db.add(
                 DecisionOutcome(
                     cycle_id=cycle_id,
+                    profile=self.profile,
                     record_type="cycle_hold",
                     action="hold",
                     summary=decision.summary,
@@ -66,6 +69,7 @@ class DecisionLearning:
             self.db.add(
                 DecisionOutcome(
                     cycle_id=cycle_id,
+                    profile=self.profile,
                     record_type=f"proposal_{proposal.action.value}",
                     symbol=proposal.symbol,
                     action=proposal.action.value,
@@ -88,6 +92,7 @@ class DecisionLearning:
         pending = (
             self.db.query(DecisionOutcome)
             .filter(
+                DecisionOutcome.profile == self.profile,
                 DecisionOutcome.outcome == OUTCOME_PENDING,
                 DecisionOutcome.created_at <= cutoff,
             )
@@ -116,13 +121,16 @@ class DecisionLearning:
 
         if evaluated:
             self.db.commit()
-            logger.info("Evaluated %d decision outcomes", evaluated)
+            logger.info("Evaluated %d decision outcomes (%s)", evaluated, self.profile)
         return evaluated
 
     def build_learning_summary(self, limit: int = 15) -> str:
         records = (
             self.db.query(DecisionOutcome)
-            .filter(DecisionOutcome.outcome != OUTCOME_PENDING)
+            .filter(
+                DecisionOutcome.profile == self.profile,
+                DecisionOutcome.outcome != OUTCOME_PENDING,
+            )
             .order_by(DecisionOutcome.evaluated_at.desc())
             .limit(limit)
             .all()
@@ -131,6 +139,7 @@ class DecisionLearning:
         if not records:
             recent = (
                 self.db.query(DecisionOutcome)
+                .filter(DecisionOutcome.profile == self.profile)
                 .order_by(DecisionOutcome.created_at.desc())
                 .limit(5)
                 .all()
@@ -177,24 +186,16 @@ class DecisionLearning:
         return "\n".join(lines)
 
     def get_stats(self) -> dict:
-        total = self.db.query(DecisionOutcome).count()
-        pending = (
-            self.db.query(DecisionOutcome)
-            .filter(DecisionOutcome.outcome == OUTCOME_PENDING)
-            .count()
+        base = self.db.query(DecisionOutcome).filter(
+            DecisionOutcome.profile == self.profile
         )
+        total = base.count()
+        pending = base.filter(DecisionOutcome.outcome == OUTCOME_PENDING).count()
         evaluated = total - pending
-        good = (
-            self.db.query(DecisionOutcome)
-            .filter(DecisionOutcome.outcome == OUTCOME_GOOD)
-            .count()
-        )
-        bad = (
-            self.db.query(DecisionOutcome)
-            .filter(DecisionOutcome.outcome == OUTCOME_BAD)
-            .count()
-        )
+        good = base.filter(DecisionOutcome.outcome == OUTCOME_GOOD).count()
+        bad = base.filter(DecisionOutcome.outcome == OUTCOME_BAD).count()
         return {
+            "profile": self.profile,
             "total_records": total,
             "pending_evaluation": pending,
             "evaluated": evaluated,
@@ -291,10 +292,14 @@ class DecisionLearning:
         """Migra decisiones antiguas sin registros de aprendizaje."""
         existing_cycles = {
             r.cycle_id
-            for r in self.db.query(DecisionOutcome.cycle_id).distinct().all()
+            for r in self.db.query(DecisionOutcome.cycle_id)
+            .filter(DecisionOutcome.profile == self.profile)
+            .distinct()
+            .all()
         }
         decisions = (
             self.db.query(AIDecision)
+            .filter(AIDecision.profile == self.profile)
             .order_by(AIDecision.created_at.asc())
             .all()
         )
@@ -315,6 +320,7 @@ class DecisionLearning:
                 self.db.add(
                     DecisionOutcome(
                         cycle_id=d.cycle_id,
+                        profile=self.profile,
                         record_type="cycle_hold",
                         action="hold",
                         summary=summary,
@@ -330,6 +336,7 @@ class DecisionLearning:
                     self.db.add(
                         DecisionOutcome(
                             cycle_id=d.cycle_id,
+                            profile=self.profile,
                             record_type=f"proposal_{p.get('action', 'hold')}",
                             symbol=p.get("symbol"),
                             action=p.get("action", "hold"),

@@ -110,6 +110,8 @@ class PositionSnapshot(BaseModel):
 
 class PortfolioSnapshot(BaseModel):
     mode: TradingMode
+    profile: str = "conservative"
+    portfolio_id: int = 0
     quote_balance: float
     total_value_usdt: float
     invested_usdt: float = 0.0

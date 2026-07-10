@@ -8,7 +8,7 @@ from ainvestor.utils.datetime_utils import app_now
 from sqlalchemy.orm import Session
 
 from ainvestor.collectors.exchange_client import ExchangeClient
-from ainvestor.config import load_risk_config
+from ainvestor.config import get_all_market_pairs
 from ainvestor.models.schemas import MarketTicker
 
 logger = logging.getLogger(__name__)
@@ -22,7 +22,7 @@ class MarketCollector:
     def __init__(self, db: Session, exchange_id: str | None = None):
         self.db = db
         self.client = ExchangeClient(exchange_id=exchange_id)
-        self._pairs = load_risk_config()["whitelist"]["pairs"]
+        self._pairs = get_all_market_pairs()
 
     @property
     def pairs(self) -> list[str]:

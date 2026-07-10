@@ -90,6 +90,20 @@
             padding: 0.5rem 1rem;
         }
         .tab.active { color: var(--text); border-color: var(--border); background: var(--card); }
+        .profile-tabs { margin-bottom: 1rem; }
+        .profile-tabs .tab { font-weight: 600; }
+        .profile-badge {
+            display: inline-block;
+            margin-left: 0.5rem;
+            padding: 0.2rem 0.6rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            background: #1e3a5f;
+            color: #93c5fd;
+            vertical-align: middle;
+        }
+        .profile-badge.aggressive { background: #422006; color: #fcd34d; }
         .panel { display: none; }
         .panel.active { display: block; }
         .chart-wrap { position: relative; height: 380px; margin-bottom: 1rem; }
@@ -101,8 +115,13 @@
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 </head>
 <body>
-    <h1>AInvestor</h1>
-    <p class="subtitle">Trading crypto asistido por IA — modo paper</p>
+    <h1>AInvestor <span id="profile-badge" class="profile-badge">Conservadora</span></h1>
+    <p class="subtitle">Trading crypto asistido por IA — modo paper · comparativa A/B</p>
+
+    <div class="tabs profile-tabs">
+        <button class="tab active" data-profile="conservative" onclick="switchProfile('conservative')">Conservadora</button>
+        <button class="tab" data-profile="aggressive" onclick="switchProfile('aggressive')">Agresiva</button>
+    </div>
 
     <div class="tabs">
         <button class="tab active" data-panel="dashboard" onclick="switchTab('dashboard')">Dashboard</button>
@@ -111,13 +130,13 @@
 
     <div id="panel-dashboard" class="panel active">
     <div class="actions">
-        <button id="btn-cycle" hx-post="/api/cycle/run" hx-target="#cycle-result" hx-swap="innerHTML" hx-indicator="#cycle-loading">
+        <button id="btn-cycle" onclick="runCycle()">
             Ejecutar ciclo IA
         </button>
-        <button class="danger" hx-post="/api/kill-switch/on" hx-swap="none" hx-on::after-request="onKillSwitch(event)">
+        <button class="danger" onclick="toggleKillSwitch('on')">
             Activar kill switch
         </button>
-        <button class="secondary" hx-post="/api/kill-switch/off" hx-swap="none" hx-on::after-request="onKillSwitch(event)">
+        <button class="secondary" onclick="toggleKillSwitch('off')">
             Desactivar kill switch
         </button>
         <button class="secondary" onclick="refreshAll()">Actualizar</button>
@@ -221,6 +240,60 @@
         };
         let perfChart = null;
         let chartRefreshTimer = null;
+        let selectedProfile = 'conservative';
+        const PROFILE_LABELS = { conservative: 'Conservadora', aggressive: 'Agresiva' };
+
+        function profileQuery() {
+            return `profile=${encodeURIComponent(selectedProfile)}`;
+        }
+
+        function switchProfile(profile) {
+            selectedProfile = profile;
+            document.querySelectorAll('.profile-tabs .tab').forEach(t =>
+                t.classList.toggle('active', t.dataset.profile === profile)
+            );
+            const badge = document.getElementById('profile-badge');
+            badge.textContent = PROFILE_LABELS[profile] || profile;
+            badge.className = 'profile-badge' + (profile === 'aggressive' ? ' aggressive' : '');
+            refreshAll();
+            if (document.getElementById('panel-charts').classList.contains('active')) {
+                loadChart();
+            }
+        }
+
+        async function runCycle() {
+            const loading = document.getElementById('cycle-loading');
+            loading.style.display = 'block';
+            try {
+                const r = await fetch(`/api/cycle/run?${profileQuery()}`, { method: 'POST' });
+                const data = await r.json();
+                const cls = data.status === 'error' ? 'error' : 'info';
+                const tok = data.token_usage
+                    ? `<br><span class="token-pill">Tokens: ${data.token_usage.total_tokens.toLocaleString('es-ES')} (in: ${data.token_usage.input_tokens}, out: ${data.token_usage.output_tokens})</span>`
+                    : '';
+                document.getElementById('cycle-result').innerHTML =
+                    `<div class="alert ${cls}"><strong>Ciclo ${data.cycle_id?.slice(0,8)}</strong> — ${data.status}<br>${data.summary || data.error || ''} (${data.approved || 0} aprob., ${data.rejected || 0} rech.)${tok}</div>`;
+                refreshAll();
+            } catch (e) {
+                console.error(e);
+            } finally {
+                loading.style.display = 'none';
+            }
+        }
+
+        async function toggleKillSwitch(action) {
+            try {
+                const r = await fetch(`/api/kill-switch/${action}?${profileQuery()}`, { method: 'POST' });
+                const data = await r.json();
+                const active = data.kill_switch_active;
+                const el = document.getElementById('kill-status');
+                el.className = 'alert ' + (active ? 'error' : 'info');
+                el.textContent = active
+                    ? `Kill switch ACTIVADO (${PROFILE_LABELS[selectedProfile]}) — no se ejecutarán nuevas operaciones.`
+                    : `Kill switch desactivado (${PROFILE_LABELS[selectedProfile]}) — operación normal.`;
+                loadPortfolio();
+            } catch (e) { console.error(e); }
+        }
 
         function switchTab(name) {
             document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.panel === name));
@@ -335,7 +408,7 @@
 
         async function loadPortfolio() {
             try {
-                const r = await fetch('/api/portfolio');
+                const r = await fetch(`/api/portfolio?${profileQuery()}`);
                 const data = await r.json();
                 renderMetrics(data);
                 renderAllocations(data);
@@ -348,28 +421,28 @@
 
         async function loadTrades() {
             try {
-                const r = await fetch('/api/trades?limit=10');
+                const r = await fetch(`/api/trades?limit=10&${profileQuery()}`);
                 renderTrades(await r.json());
             } catch (e) {}
         }
 
         async function loadDecisions() {
             try {
-                const r = await fetch('/api/decisions?limit=10');
+                const r = await fetch(`/api/decisions?limit=10&${profileQuery()}`);
                 renderDecisions(await r.json());
             } catch (e) {}
         }
 
         async function loadLearning() {
             try {
-                const r = await fetch('/api/learning');
+                const r = await fetch(`/api/learning?${profileQuery()}`);
                 renderLearning(await r.json());
             } catch (e) {}
         }
 
         async function loadTokenUsage() {
             try {
-                const r = await fetch('/api/ai/usage');
+                const r = await fetch(`/api/ai/usage?${profileQuery()}`);
                 const data = await r.json();
                 const el = document.getElementById('token-usage-bar');
                 if (!el) return;
@@ -384,7 +457,7 @@
             const symbol = document.getElementById('chart-symbol').value;
             const hours = document.getElementById('chart-hours').value;
             try {
-                const r = await fetch(`/api/charts/performance?hours=${hours}&symbol=${encodeURIComponent(symbol)}`);
+                const r = await fetch(`/api/charts/performance?hours=${hours}&symbol=${encodeURIComponent(symbol)}&${profileQuery()}`);
                 const data = await r.json();
                 renderChart(data);
                 populateSymbolSelect(data.symbols || []);
@@ -505,6 +578,7 @@
                 <div class="card"><h2>Efectivo</h2><div class="metric">${fmt(data.cash_pct, 1)}%</div></div>
                 <div class="card"><h2>P&L no realizado</h2><div class="metric ${pnlClass}">${data.unrealized_pnl >= 0 ? '+' : ''}${fmt(data.unrealized_pnl)}</div></div>
                 <div class="card"><h2>P&L realizado</h2><div class="metric ${data.realized_pnl >= 0 ? 'positive' : 'negative'}">${data.realized_pnl >= 0 ? '+' : ''}${fmt(data.realized_pnl)}</div></div>
+                <div class="card"><h2>Perfil</h2><div class="metric"><span class="badge paper">${PROFILE_LABELS[data.profile] || data.profile}</span></div></div>
                 <div class="card"><h2>Modo</h2><div class="metric"><span class="badge paper">${data.mode}</span></div></div>
                 <div class="card"><h2>Kill switch</h2><div class="metric">${data.kill_switch_active ? '<span class="negative">ACTIVO</span>' : '<span class="positive">OFF</span>'}</div></div>
             `;
@@ -630,36 +704,8 @@
             el.innerHTML = html;
         }
 
-        function onKillSwitch(evt) {
-            try {
-                const data = JSON.parse(evt.detail.xhr.response);
-                const active = data.kill_switch_active;
-                const el = document.getElementById('kill-status');
-                el.className = 'alert ' + (active ? 'error' : 'info');
-                el.textContent = active
-                    ? 'Kill switch ACTIVADO — no se ejecutarán nuevas operaciones.'
-                    : 'Kill switch desactivado — operación normal.';
-                loadPortfolio();
-            } catch (e) {}
-        }
-
-        document.body.addEventListener('htmx:afterRequest', function(evt) {
-            const btn = evt.detail.elt;
-            if (btn && btn.id === 'btn-cycle') {
-                try {
-                    const r = JSON.parse(evt.detail.xhr.response);
-                    const cls = r.status === 'error' ? 'error' : 'info';
-                    const tok = r.token_usage
-                        ? `<br><span class="token-pill">Tokens: ${r.token_usage.total_tokens.toLocaleString('es-ES')} (in: ${r.token_usage.input_tokens}, out: ${r.token_usage.output_tokens}${r.token_usage.cache_read_tokens ? ', cache: ' + r.token_usage.cache_read_tokens : ''})</span>`
-                        : '';
-                    document.getElementById('cycle-result').innerHTML =
-                        `<div class="alert ${cls}"><strong>Ciclo ${r.cycle_id?.slice(0,8)}</strong> — ${r.status}<br>${r.summary || r.error || ''} (${r.approved || 0} aprob., ${r.rejected || 0} rech.)${tok}</div>`;
-                    refreshAll();
-                } catch (e) {}
-            }
-        });
-
         refreshAll();
+
         setInterval(loadPortfolio, 30000);
         setInterval(loadTrades, 30000);
         setInterval(loadDecisions, 60000);

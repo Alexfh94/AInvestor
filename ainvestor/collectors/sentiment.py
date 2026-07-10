@@ -10,7 +10,7 @@ from ainvestor.utils.datetime_utils import app_now
 import httpx
 from sqlalchemy.orm import Session
 
-from ainvestor.config import get_settings, load_risk_config
+from ainvestor.config import get_all_market_pairs, get_settings
 from ainvestor.db.models import SentimentRecord
 from ainvestor.models.schemas import SentimentData
 
@@ -26,7 +26,7 @@ class SentimentCollector:
 
     def __init__(self, db: Session | None = None):
         self.settings = get_settings()
-        self._pairs = load_risk_config()["whitelist"]["pairs"]
+        self._pairs = get_all_market_pairs()
         self.db = db
 
     async def collect(self, btc_dominance: float | None = None, persist: bool = True) -> SentimentData:

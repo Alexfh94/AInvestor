@@ -16,6 +16,7 @@ from ainvestor.models.schemas import (
 )
 from ainvestor.portfolio.manager import PaperTradingSimulator, PortfolioManager
 from ainvestor.portfolio.perp_simulator import PerpPaperSimulator
+from ainvestor.portfolio.profiles import DEFAULT_PROFILE, normalize_profile
 from ainvestor.portfolio.stock_simulator import StockPortfolioManager
 from ainvestor.services.market_hours import is_us_market_open
 
@@ -28,10 +29,11 @@ logger = logging.getLogger(__name__)
 class TradeExecutor:
     """Routes validated trades to spot, perp, stock or IBKR adapters."""
 
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, profile: str = DEFAULT_PROFILE):
         self.db = db
         self.settings = get_settings()
-        self.portfolio_mgr = PortfolioManager(db)
+        self.profile = normalize_profile(profile)
+        self.portfolio_mgr = PortfolioManager(db, profile=self.profile)
         self.stock_mgr = StockPortfolioManager(db)
 
     async def execute_approved(

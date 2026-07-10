@@ -22,7 +22,8 @@ class PerpPaperSimulator:
     def __init__(self, db: Session, portfolio: Portfolio):
         self.db = db
         self.portfolio = portfolio
-        self.config = load_risk_config().get("derivatives", {})
+        profile = getattr(portfolio, "profile", None) or "conservative"
+        self.config = load_risk_config(profile=profile).get("derivatives", {})
 
     def open_position(
         self,

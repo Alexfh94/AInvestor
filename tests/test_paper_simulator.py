@@ -16,7 +16,13 @@ def db_session():
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
     session = Session()
-    portfolio = Portfolio(mode="paper", quote_balance=10000.0, quote_currency="USDT")
+    portfolio = Portfolio(
+        mode="paper",
+        profile="conservative",
+        quote_balance=10000.0,
+        initial_balance=100.0,
+        quote_currency="USDT",
+    )
     session.add(portfolio)
     session.commit()
     yield session

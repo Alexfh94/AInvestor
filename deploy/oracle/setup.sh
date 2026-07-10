@@ -4,7 +4,7 @@ set -euo pipefail
 
 APP_DIR="${APP_DIR:-/opt/ainvestor}"
 REPO_URL="${REPO_URL:-https://github.com/Alexfh94/AInvestor.git}"
-BRANCH="${BRANCH:-main}"
+BRANCH="${BRANCH:-master}"
 
 echo "==> AInvestor setup en $APP_DIR"
 

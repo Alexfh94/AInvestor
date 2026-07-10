@@ -8,7 +8,7 @@ from ainvestor.utils.datetime_utils import app_now
 
 from sqlalchemy.orm import Session
 
-from ainvestor.config import get_settings
+from ainvestor.config import get_profile_initial_balance, get_settings
 from ainvestor.db.models import Portfolio, Position, Trade
 from ainvestor.models.schemas import (
     PortfolioSnapshot,
@@ -17,6 +17,7 @@ from ainvestor.models.schemas import (
     TradeStatus,
     TradingMode,
 )
+from ainvestor.portfolio.profiles import DEFAULT_PROFILE, normalize_profile
 
 logger = logging.getLogger(__name__)
 
@@ -150,20 +151,27 @@ class PaperTradingSimulator:
 class PortfolioManager:
     """Manages portfolio state across paper/testnet/live modes."""
 
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, profile: str = DEFAULT_PROFILE):
         self.db = db
         self.settings = get_settings()
+        self.profile = normalize_profile(profile)
 
     def get_or_create_portfolio(self) -> Portfolio:
         portfolio = (
             self.db.query(Portfolio)
-            .filter(Portfolio.mode == self.settings.trading_mode)
+            .filter(
+                Portfolio.mode == self.settings.trading_mode,
+                Portfolio.profile == self.profile,
+            )
             .first()
         )
         if portfolio is None:
+            initial = get_profile_initial_balance(self.profile)
             portfolio = Portfolio(
                 mode=self.settings.trading_mode,
-                quote_balance=self.settings.paper_initial_balance,
+                profile=self.profile,
+                quote_balance=initial,
+                initial_balance=initial,
                 quote_currency=self.settings.paper_quote_currency,
             )
             self.db.add(portfolio)
@@ -225,6 +233,8 @@ class PortfolioManager:
 
         return PortfolioSnapshot(
             mode=TradingMode(portfolio.mode),
+            profile=portfolio.profile,
+            portfolio_id=portfolio.id,
             quote_balance=portfolio.quote_balance,
             total_value_usdt=total_value,
             invested_usdt=invested_usdt,
@@ -251,7 +261,8 @@ class PortfolioManager:
         )
 
     def get_initial_value(self) -> float:
-        return self.settings.paper_initial_balance
+        portfolio = self.get_or_create_portfolio()
+        return portfolio.initial_balance or get_profile_initial_balance(self.profile)
 
     @staticmethod
     def new_cycle_id() -> str:

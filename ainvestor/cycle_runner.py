@@ -13,7 +13,6 @@ from ainvestor.collectors.macro import MacroCollector
 from ainvestor.collectors.market import MarketCollector
 from ainvestor.collectors.news import NewsCollector
 from ainvestor.collectors.sentiment import SentimentCollector
-from ainvestor.collectors.stocks import StockCollector
 from ainvestor.config import load_risk_config
 from ainvestor.db.models import AIDecision, CycleRun
 from ainvestor.engine.ai_agent import AIAgent, build_cycle_prompt
@@ -21,9 +20,9 @@ from ainvestor.engine.executor import TradeExecutor
 from ainvestor.engine.learning import DecisionLearning
 from ainvestor.engine.quant import QuantEngine
 from ainvestor.engine.risk import RiskManager
+from ainvestor.models.schemas import AssetClass, InstrumentType
 from ainvestor.portfolio.manager import PortfolioManager
-from ainvestor.portfolio.unified import UnifiedPortfolioManager
-from ainvestor.services.market_hours import market_status_label
+from ainvestor.portfolio.profiles import DEFAULT_PROFILE, PROFILE_LABELS, normalize_profile
 
 logger = logging.getLogger(__name__)
 
@@ -31,29 +30,29 @@ _last_market_context: dict = {}
 
 
 class CycleRunner:
-    """Orchestrates a full AI trading cycle."""
+    """Orchestrates a full AI trading cycle for one portfolio profile."""
 
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, profile: str = DEFAULT_PROFILE):
         self.db = db
+        self.profile = normalize_profile(profile)
         self.market = MarketCollector(db)
         self.news = NewsCollector(db)
         self.sentiment = SentimentCollector(db)
         self.derivatives = DerivativesCollector(db)
         self.macro = MacroCollector()
-        self.stocks = StockCollector()
         self.quant = QuantEngine()
-        self.portfolio_mgr = PortfolioManager(db)
-        self.unified_mgr = UnifiedPortfolioManager(db)
-        self.risk = RiskManager(db)
-        self.executor = TradeExecutor(db)
+        self.portfolio_mgr = PortfolioManager(db, profile=self.profile)
+        self.risk = RiskManager(db, profile=self.profile)
+        self.executor = TradeExecutor(db, profile=self.profile)
         self.ai = AIAgent()
-        self.learning = DecisionLearning(db)
+        self.learning = DecisionLearning(db, profile=self.profile)
 
     async def run(self, cycle_id: str | None = None) -> dict:
         global _last_market_context
         cycle_id = cycle_id or PortfolioManager.new_cycle_id()
+        risk_config = load_risk_config(profile=self.profile)
 
-        cycle_run = CycleRun(cycle_id=cycle_id, status="running")
+        cycle_run = CycleRun(cycle_id=cycle_id, status="running", profile=self.profile)
         self.db.add(cycle_run)
         self.db.commit()
 
@@ -72,17 +71,12 @@ class CycleRunner:
             news_items = await self.news.collect(currencies=self.market.pairs)
             sentiment_data = await self.sentiment.collect(btc_dominance=macro_ctx.btc_dominance)
 
-            stock_tickers = await self.stocks.collect_all()
-            stock_prices = {t.symbol: t.last for t in stock_tickers}
-
             from ainvestor.dex import DexConnector
 
             dex = DexConnector()
             await dex.detect_cex_gaps(self.market.pairs)
 
             snapshot = await self.portfolio_mgr.get_snapshot(prices)
-            unified = await self.unified_mgr.get_snapshot(prices, stock_prices)
-            risk_config = load_risk_config()
 
             self.learning.backfill_from_decisions()
             self.learning.evaluate_pending(prices)
@@ -90,8 +84,8 @@ class CycleRunner:
 
             use_mcp = bool(self.ai.settings.cursor_api_key)
             prompt = build_cycle_prompt(
-                portfolio_summary=self._format_portfolio(snapshot, unified),
-                market_summary=self._format_market(tickers, stock_tickers),
+                portfolio_summary=self._format_portfolio(snapshot),
+                market_summary=self._format_market(tickers),
                 signals_summary=self.quant.summarize(signals),
                 news_summary=self.news.summarize(news_items),
                 sentiment_summary=self.sentiment.summarize(
@@ -101,47 +95,47 @@ class CycleRunner:
                 learning_summary=learning_summary,
                 macro_summary=self.macro.summarize(macro_ctx),
                 derivatives_summary=self.derivatives.summarize(deriv_snapshots),
-                market_status=market_status_label(),
+                market_status="crypto-only",
                 use_mcp=use_mcp,
+                profile=self.profile,
             )
 
-            _last_market_context = {
-                "tickers": [t.model_dump(mode="json") for t in tickers],
-                "stocks": [t.model_dump(mode="json") for t in stock_tickers],
-                "signals": [s.model_dump() for s in signals],
-                "derivatives": [d.model_dump(mode="json") for d in deriv_snapshots],
-                "macro": macro_ctx.model_dump(mode="json"),
-                "sentiment": sentiment_data.model_dump(mode="json"),
-                "news": [n.model_dump(mode="json") for n in news_items[:10]],
-                "unified": unified.model_dump(),
-                "market_status": market_status_label(),
-                "captured_at": app_now_iso(),
-            }
+            if self.profile == DEFAULT_PROFILE:
+                _last_market_context = {
+                    "tickers": [t.model_dump(mode="json") for t in tickers],
+                    "signals": [s.model_dump() for s in signals],
+                    "derivatives": [d.model_dump(mode="json") for d in deriv_snapshots],
+                    "macro": macro_ctx.model_dump(mode="json"),
+                    "sentiment": sentiment_data.model_dump(mode="json"),
+                    "news": [n.model_dump(mode="json") for n in news_items[:10]],
+                    "profile": self.profile,
+                    "market_status": "crypto-only",
+                    "captured_at": app_now_iso(),
+                }
 
             decision, raw_response, run_id, token_usage = await self.ai.run_cycle(prompt)
-
-            if decision.allocation:
-                alloc_issues = self.unified_mgr.check_allocation_limits(decision.allocation)
-                if alloc_issues:
-                    logger.warning("Allocation warnings: %s", alloc_issues)
 
             approved_count = 0
             rejected_count = 0
             approved_symbols: set[str] = set()
             rejected_proposals: list[tuple] = []
 
-            all_prices = {**prices, **stock_prices}
-
             for proposal in decision.proposals:
-                price = all_prices.get(proposal.symbol, 0)
+                if (
+                    proposal.instrument_type == InstrumentType.STOCK
+                    or proposal.asset_class == AssetClass.STOCK
+                ):
+                    rejected_count += 1
+                    rejected_proposals.append((proposal, ["Stock trades disabled"]))
+                    continue
+
+                price = prices.get(proposal.symbol, 0)
                 if price <= 0:
                     rejected_count += 1
                     rejected_proposals.append((proposal, ["Precio no disponible"]))
                     continue
 
-                fee_rate = 0.0
-                if proposal.asset_class.value != "stock":
-                    fee_rate = await self.market.client.get_taker_fee_rate(proposal.symbol)
+                fee_rate = await self.market.client.get_taker_fee_rate(proposal.symbol)
 
                 funding_rate = 0.0
                 deriv = deriv_by_symbol.get(proposal.symbol)
@@ -173,13 +167,14 @@ class CycleRunner:
             self.learning.record_cycle(
                 cycle_id=cycle_id,
                 decision=decision,
-                prices=all_prices,
+                prices=prices,
                 approved_symbols=approved_symbols,
                 rejected=rejected_proposals,
             )
 
             ai_record = AIDecision(
                 cycle_id=cycle_id,
+                profile=self.profile,
                 model=self.ai.settings.ai_model,
                 summary=decision.summary,
                 hold=decision.hold,
@@ -207,6 +202,8 @@ class CycleRunner:
 
             return {
                 "cycle_id": cycle_id,
+                "profile": self.profile,
+                "profile_label": PROFILE_LABELS.get(self.profile, self.profile),
                 "status": "completed",
                 "hold": decision.hold,
                 "summary": decision.summary,
@@ -216,16 +213,21 @@ class CycleRunner:
                 "rejected": rejected_count,
                 "run_id": run_id,
                 "token_usage": token_usage.to_dict(),
-                "unified_equity_eur": unified.total_equity_eur,
+                "total_value_usdt": snapshot.total_value_usdt,
             }
 
         except Exception as e:
-            logger.exception("Cycle %s failed: %s", cycle_id, e)
+            logger.exception("Cycle %s (%s) failed: %s", cycle_id, self.profile, e)
             cycle_run.status = "error"
             cycle_run.error = str(e)
             cycle_run.completed_at = app_now()
             self.db.commit()
-            return {"cycle_id": cycle_id, "status": "error", "error": str(e)}
+            return {
+                "cycle_id": cycle_id,
+                "profile": self.profile,
+                "status": "error",
+                "error": str(e),
+            }
 
     async def run_risk_monitor(self) -> dict:
         prices: dict[str, float] = {}
@@ -240,11 +242,14 @@ class CycleRunner:
 
         if self.risk.should_activate_kill_switch(snapshot):
             self.portfolio_mgr.set_kill_switch(True)
-            logger.warning("Kill switch activated due to max drawdown")
+            logger.warning("Kill switch activated (%s) due to max drawdown", self.profile)
             from ainvestor.alerts import send_telegram_alert
 
-            await send_telegram_alert("AInvestor: Kill switch activated (max drawdown)")
-            return {"kill_switch": True, "reason": "max_drawdown"}
+            label = PROFILE_LABELS.get(self.profile, self.profile)
+            await send_telegram_alert(
+                f"AInvestor ({label}): Kill switch activated (max drawdown)"
+            )
+            return {"profile": self.profile, "kill_switch": True, "reason": "max_drawdown"}
 
         triggers = self.risk.check_stop_loss_take_profit(snapshot)
         executed = []
@@ -258,17 +263,19 @@ class CycleRunner:
 
         await record_portfolio_value_async(self.db, self.portfolio_mgr, prices)
 
-        return {"kill_switch": snapshot.kill_switch_active, "stop_triggers": executed}
+        return {
+            "profile": self.profile,
+            "kill_switch": snapshot.kill_switch_active,
+            "stop_triggers": executed,
+        }
 
-    def _format_portfolio(self, snapshot, unified) -> str:
+    def _format_portfolio(self, snapshot) -> str:
+        label = PROFILE_LABELS.get(self.profile, self.profile)
         lines = [
+            f"Profile: {label} ({snapshot.profile})",
             f"Mode: {snapshot.mode.value}",
             f"Quote balance: {snapshot.quote_balance:.2f} USDT",
             f"Total value: {snapshot.total_value_usdt:.2f} USDT",
-            f"Unified equity: {unified.total_equity_eur:.2f} EUR",
-            f"  - Crypto: {unified.crypto_value_eur:.2f} EUR",
-            f"  - Stocks: {unified.stock_value_eur:.2f} EUR",
-            f"  - Cash: {unified.cash_eur:.2f} EUR",
             f"Unrealized P&L: {snapshot.unrealized_pnl:.2f}",
             f"Realized P&L: {snapshot.realized_pnl:.2f}",
             f"Kill switch: {snapshot.kill_switch_active}",
@@ -281,16 +288,13 @@ class CycleRunner:
             )
         return "\n".join(lines)
 
-    def _format_market(self, tickers, stock_tickers) -> str:
+    def _format_market(self, tickers) -> str:
         lines = ["--- Crypto ---"]
         sorted_tickers = sorted(tickers, key=lambda t: abs(t.change_pct or 0), reverse=True)
-        for t in sorted_tickers[:10]:
+        for t in sorted_tickers[:12]:
             chg = f"{t.change_pct:+.2f}%" if t.change_pct else "N/A"
             spread = f", spread {t.spread_pct:.3f}%" if t.spread_pct else ""
             lines.append(f"{t.symbol}: {t.last:.4f} ({chg}{spread})")
-        if stock_tickers:
-            lines.append("--- Stocks/ETFs ---")
-            lines.append(self.stocks.summarize(stock_tickers))
         return "\n".join(lines)
 
 

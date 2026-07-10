@@ -9,6 +9,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from ainvestor.config import get_settings
 from ainvestor.cycle_runner import CycleRunner
 from ainvestor.db.models import SessionLocal
+from ainvestor.portfolio.profiles import PROFILES
 
 logger = logging.getLogger(__name__)
 
@@ -18,9 +19,10 @@ _scheduler: AsyncIOScheduler | None = None
 async def _run_ai_cycle():
     db = SessionLocal()
     try:
-        runner = CycleRunner(db)
-        result = await runner.run()
-        logger.info("AI cycle completed: %s", result)
+        for profile in PROFILES:
+            runner = CycleRunner(db, profile=profile)
+            result = await runner.run()
+            logger.info("AI cycle completed (%s): %s", profile, result)
     except Exception as e:
         logger.exception("AI cycle error: %s", e)
     finally:
@@ -30,10 +32,11 @@ async def _run_ai_cycle():
 async def _run_risk_monitor():
     db = SessionLocal()
     try:
-        runner = CycleRunner(db)
-        result = await runner.run_risk_monitor()
-        if result.get("kill_switch") or result.get("stop_triggers"):
-            logger.warning("Risk monitor alert: %s", result)
+        for profile in PROFILES:
+            runner = CycleRunner(db, profile=profile)
+            result = await runner.run_risk_monitor()
+            if result.get("kill_switch") or result.get("stop_triggers"):
+                logger.warning("Risk monitor alert (%s): %s", profile, result)
     except Exception as e:
         logger.exception("Risk monitor error: %s", e)
     finally:
@@ -52,8 +55,9 @@ async def _run_market_collect():
         logger.info("Collected %d market snapshots", len(tickers))
 
         prices = {t.symbol: t.last for t in tickers}
-        mgr = PortfolioManager(db)
-        await record_portfolio_value_async(db, mgr, prices)
+        for profile in PROFILES:
+            mgr = PortfolioManager(db, profile=profile)
+            await record_portfolio_value_async(db, mgr, prices)
     except Exception as e:
         logger.exception("Market collect error: %s", e)
     finally:
@@ -75,11 +79,12 @@ async def _run_learning_eval():
             except Exception:
                 pass
 
-        learning = DecisionLearning(db)
-        learning.backfill_from_decisions()
-        count = learning.evaluate_pending(prices)
-        if count:
-            logger.info("Learning evaluation: %d outcomes updated", count)
+        for profile in PROFILES:
+            learning = DecisionLearning(db, profile=profile)
+            learning.backfill_from_decisions()
+            count = learning.evaluate_pending(prices)
+            if count:
+                logger.info("Learning evaluation (%s): %d outcomes updated", profile, count)
     except Exception as e:
         logger.exception("Learning eval error: %s", e)
     finally:
@@ -121,7 +126,7 @@ def start_scheduler() -> AsyncIOScheduler:
 
     _scheduler.start()
     logger.info(
-        "Scheduler started: AI=%dmin, Risk=%dmin, Market=%dmin, Learning=%dmin",
+        "Scheduler started: AI=%dmin, Risk=%dmin, Market=%dmin, Learning=%dmin (dual profile)",
         settings.ai_cycle_interval,
         settings.risk_monitor_interval,
         settings.market_collect_interval,

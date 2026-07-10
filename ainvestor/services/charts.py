@@ -6,9 +6,9 @@ from ainvestor.utils.datetime_utils import app_now, app_now_iso, format_app_date
 
 from sqlalchemy.orm import Session
 
-from ainvestor.config import get_settings
 from ainvestor.db.models import MarketSnapshot, Portfolio, PortfolioValueHistory, Trade
 from ainvestor.portfolio.manager import PortfolioManager
+from ainvestor.portfolio.profiles import DEFAULT_PROFILE, PROFILE_LABELS, normalize_profile
 
 
 def record_portfolio_value(
@@ -46,10 +46,11 @@ async def build_performance_chart(
     db: Session,
     hours: int = 48,
     symbol: str | None = None,
+    profile: str = DEFAULT_PROFILE,
 ) -> dict:
     """Construye datos para gráfica de cartera o de un activo."""
-    settings = get_settings()
-    mgr = PortfolioManager(db)
+    prof = normalize_profile(profile)
+    mgr = PortfolioManager(db, profile=prof)
     portfolio = mgr.get_or_create_portfolio()
     since = app_now() - timedelta(hours=hours)
 
@@ -76,7 +77,7 @@ async def build_performance_chart(
     if symbol and symbol != "portfolio":
         return await _asset_chart(db, symbol, since, markers, portfolio)
 
-    return await _portfolio_chart(db, mgr, portfolio, since, markers, settings)
+    return await _portfolio_chart(db, mgr, portfolio, since, markers, prof)
 
 
 async def _portfolio_chart(
@@ -85,7 +86,7 @@ async def _portfolio_chart(
     portfolio: Portfolio,
     since: datetime,
     markers: list[dict],
-    settings,
+    profile: str,
 ) -> dict:
     history = (
         db.query(PortfolioValueHistory)
@@ -97,12 +98,13 @@ async def _portfolio_chart(
         .all()
     )
 
+    initial = mgr.get_initial_value()
     series: list[dict] = []
     if not history:
         series.append(
             {
                 "t": format_app_datetime(portfolio.created_at),
-                "value": settings.paper_initial_balance,
+                "value": initial,
             }
         )
     else:
@@ -112,10 +114,14 @@ async def _portfolio_chart(
         ]
 
     from ainvestor.collectors.market import MarketCollector
+    from ainvestor.config import load_risk_config
+
+    risk = load_risk_config(profile=profile)
+    whitelist = risk.get("whitelist", {}).get("pairs", [])
 
     collector = MarketCollector(db)
     prices: dict[str, float] = {}
-    for pair in collector.pairs:
+    for pair in whitelist or collector.pairs:
         try:
             ticker = await collector.client.fetch_ticker(pair)
             prices[pair] = ticker.get("last") or ticker.get("close", 0)
@@ -127,16 +133,17 @@ async def _portfolio_chart(
     if not series or series[-1]["t"] != now:
         series.append({"t": now, "value": snapshot.total_value_usdt})
 
-    initial = settings.paper_initial_balance
     current = snapshot.total_value_usdt
     return_pct = ((current - initial) / initial * 100) if initial else 0.0
+    label = PROFILE_LABELS.get(profile, profile)
 
     return {
         "mode": "portfolio",
-        "label": "Valor cartera (USDT)",
+        "profile": profile,
+        "label": f"Valor cartera {label} (USDT)",
         "series": series,
         "markers": markers,
-        "symbols": collector.pairs,
+        "symbols": list(whitelist or collector.pairs),
         "summary": {
             "initial_usdt": initial,
             "current_usdt": current,

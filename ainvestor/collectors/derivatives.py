@@ -7,7 +7,7 @@ from ainvestor.utils.datetime_utils import app_now
 
 import httpx
 
-from ainvestor.config import load_risk_config
+from ainvestor.config import get_all_market_pairs, load_risk_config
 from ainvestor.models.schemas import DerivativesSnapshot
 
 logger = logging.getLogger(__name__)
@@ -20,7 +20,7 @@ class DerivativesCollector:
     """Funding rate and open interest from Binance futures public API."""
 
     def __init__(self):
-        self._pairs = load_risk_config()["whitelist"]["pairs"]
+        self._pairs = get_all_market_pairs()
 
     def _perp_symbol(self, spot_symbol: str) -> str:
         base = spot_symbol.split("/")[0]

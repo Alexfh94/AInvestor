@@ -19,6 +19,7 @@ from ainvestor.models.schemas import (
     TradeProposal,
     TradeSide,
 )
+from ainvestor.portfolio.profiles import DEFAULT_PROFILE, normalize_profile
 from ainvestor.services.market_hours import is_us_market_open
 
 logger = logging.getLogger(__name__)
@@ -43,9 +44,10 @@ def max_position_pct_for_conviction(conviction: int, config: dict | None = None)
 class RiskManager:
     """Deterministic risk gate — AI proposals must pass all checks."""
 
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, profile: str = DEFAULT_PROFILE):
         self.db = db
-        self.config = load_risk_config()
+        self.profile = normalize_profile(profile)
+        self.config = load_risk_config(profile=self.profile)
         self.settings = get_settings()
 
     def max_position_pct_for_conviction(self, conviction: int) -> float:
@@ -71,18 +73,21 @@ class RiskManager:
         if proposal.action == DecisionAction.HOLD:
             return RiskCheckResult(approved=True, proposal=proposal)
 
+        if proposal.instrument_type == InstrumentType.STOCK or proposal.asset_class == AssetClass.STOCK:
+            reasons.append("Stock trades disabled for dual-portfolio comparison")
+            self._log_rejection(proposal, reasons, cycle_id, portfolio.portfolio_id)
+            return RiskCheckResult(approved=False, proposal=proposal, rejection_reasons=reasons)
+
         reasons.extend(self._check_live_mode_allowed(proposal))
         reasons.extend(self._check_conviction_divergence(proposal, quant_conviction))
 
         if proposal.instrument_type == InstrumentType.PERPETUAL:
             reasons.extend(self._validate_perp(proposal, portfolio, current_price, fee_rate))
-        elif proposal.instrument_type == InstrumentType.STOCK or proposal.asset_class == AssetClass.STOCK:
-            reasons.extend(self._validate_stock(proposal, portfolio, current_price))
         else:
             reasons.extend(self._validate_spot(proposal, portfolio, current_price, fee_rate, cycle_id))
 
         if reasons:
-            self._log_rejection(proposal, reasons, cycle_id)
+            self._log_rejection(proposal, reasons, cycle_id, portfolio.portfolio_id)
             return RiskCheckResult(approved=False, proposal=proposal, rejection_reasons=reasons)
 
         return RiskCheckResult(approved=True, proposal=proposal)
@@ -122,16 +127,21 @@ class RiskManager:
             if not live_cfg.get("gradual_activation", {}).get("crypto_perps", False):
                 reasons.append("Live perps not activated (gradual_activation.crypto_perps=false)")
 
+        whitelist = self.config["whitelist"]["pairs"]
+        if proposal.symbol not in whitelist:
+            reasons.append(f"Symbol {proposal.symbol} not in whitelist")
+
         max_lev = int(deriv.get("max_leverage", 2))
         mifid_cap = int(deriv.get("mifid_retail_leverage_cap", 2))
         cap = min(max_lev, mifid_cap)
         if proposal.leverage > cap:
             reasons.append(f"Leverage {proposal.leverage}x exceeds cap {cap}x")
 
+        portfolio_id = portfolio.portfolio_id
         open_perps = (
             self.db.query(func.count(Position.id))
             .filter(
-                Position.portfolio_id == self._portfolio_id(portfolio),
+                Position.portfolio_id == portfolio_id,
                 Position.is_open == True,  # noqa: E712
                 Position.instrument_type == "perpetual",
             )
@@ -155,32 +165,7 @@ class RiskManager:
         portfolio: PortfolioSnapshot,
         current_price: float,
     ) -> list[str]:
-        reasons: list[str] = []
-        stocks_cfg = self.config.get("stocks", {})
-        if not stocks_cfg.get("enabled", False):
-            reasons.append("Stocks disabled in risk config")
-
-        whitelist = self.config.get("assets", {}).get("stocks", [])
-        if proposal.symbol not in whitelist:
-            reasons.append(f"Stock {proposal.symbol} not in whitelist")
-
-        if stocks_cfg.get("market_hours_required", True) and not is_us_market_open():
-            reasons.append("US market closed — no stock trades")
-
-        if stocks_cfg.get("paper_only", True) and self.settings.trading_mode == "live":
-            live_cfg = self.config.get("modes", {}).get("live", {})
-            if not live_cfg.get("gradual_activation", {}).get("stocks", False):
-                reasons.append("Live stocks not activated")
-
-        if proposal.position_side == "short":
-            reasons.append("Stock short not supported in paper mode")
-
-        if proposal.action == DecisionAction.BUY:
-            order_value = portfolio.quote_balance * (proposal.amount_pct / 100)
-            min_eur = float(stocks_cfg.get("min_order_value_eur", 10))
-            if order_value < min_eur:
-                reasons.append(f"Stock order below minimum {min_eur} EUR equivalent")
-        return reasons
+        return ["Stock trades disabled for dual-portfolio comparison"]
 
     def _check_conviction_divergence(
         self, proposal: TradeProposal, quant_conviction: int | None
@@ -271,7 +256,7 @@ class RiskManager:
             reasons.append("Take-profit too low to cover round-trip fees")
 
         reasons.extend(self._check_loss_limits(portfolio, limits_cfg))
-        reasons.extend(self._check_trade_count_limits(limits_cfg))
+        reasons.extend(self._check_trade_count_limits(limits_cfg, portfolio.portfolio_id))
         return reasons
 
     def _validate_sell(
@@ -294,7 +279,7 @@ class RiskManager:
 
     def _check_loss_limits(self, portfolio: PortfolioSnapshot, limits_cfg: dict) -> list[str]:
         reasons: list[str] = []
-        initial = self.settings.paper_initial_balance
+        initial = self._initial_for_portfolio(portfolio)
         if initial <= 0:
             return reasons
 
@@ -302,36 +287,54 @@ class RiskManager:
         if drawdown_pct >= limits_cfg["max_drawdown_pct"]:
             reasons.append(f"Max drawdown {drawdown_pct:.1f}% exceeded")
 
-        daily_loss = self._get_period_loss_pct(days=1)
+        daily_loss = self._get_period_loss_pct(days=1, portfolio_id=portfolio.portfolio_id, initial=initial)
         if daily_loss >= limits_cfg["max_daily_loss_pct"]:
             reasons.append(f"Daily loss limit {daily_loss:.1f}% exceeded")
 
-        weekly_loss = self._get_period_loss_pct(days=7)
+        weekly_loss = self._get_period_loss_pct(days=7, portfolio_id=portfolio.portfolio_id, initial=initial)
         if weekly_loss >= limits_cfg["max_weekly_loss_pct"]:
             reasons.append(f"Weekly loss limit {weekly_loss:.1f}% exceeded")
 
         return reasons
 
-    def _check_trade_count_limits(self, limits_cfg: dict) -> list[str]:
+    def _get_initial_from_snapshot(self, portfolio: PortfolioSnapshot) -> float:
+        from ainvestor.portfolio.manager import PortfolioManager
+
+        return PortfolioManager(self.db, profile=self.profile).get_initial_value()
+
+    def _initial_for_portfolio(self, portfolio: PortfolioSnapshot) -> float:
+        from ainvestor.db.models import Portfolio as PortfolioModel
+
+        row = self.db.query(PortfolioModel).filter(PortfolioModel.id == portfolio.portfolio_id).first()
+        if row and row.initial_balance:
+            return row.initial_balance
+        return self._get_initial_from_snapshot(portfolio)
+
+    def _check_trade_count_limits(self, limits_cfg: dict, portfolio_id: int) -> list[str]:
         today = app_now().replace(hour=0, minute=0, second=0, microsecond=0)
         count = (
-            self.db.query(func.count(Trade.id)).filter(Trade.executed_at >= today).scalar()
+            self.db.query(func.count(Trade.id))
+            .filter(Trade.executed_at >= today, Trade.portfolio_id == portfolio_id)
+            .scalar()
         ) or 0
         if count >= limits_cfg["max_trades_per_day"]:
             return [f"Max trades per day ({limits_cfg['max_trades_per_day']}) reached"]
         return []
 
-    def _get_period_loss_pct(self, days: int) -> float:
+    def _get_period_loss_pct(self, days: int, portfolio_id: int, initial: float) -> float:
         since = app_now() - timedelta(days=days)
         sells = (
             self.db.query(Trade)
-            .filter(Trade.executed_at >= since, Trade.side == TradeSide.SELL.value)
+            .filter(
+                Trade.executed_at >= since,
+                Trade.side == TradeSide.SELL.value,
+                Trade.portfolio_id == portfolio_id,
+            )
             .all()
         )
         if not sells:
             return 0.0
         total_pnl = sum(t.value_usdt - t.fee for t in sells)
-        initial = self.settings.paper_initial_balance
         if total_pnl >= 0:
             return 0.0
         return abs(total_pnl / initial) * 100
@@ -348,25 +351,25 @@ class RiskManager:
         return triggers
 
     def should_activate_kill_switch(self, portfolio: PortfolioSnapshot) -> bool:
-        initial = self.settings.paper_initial_balance
+        initial = self._initial_for_portfolio(portfolio)
         if initial <= 0:
             return False
         drawdown = ((initial - portfolio.total_value_usdt) / initial) * 100
         return drawdown >= self.config["limits"]["max_drawdown_pct"]
 
-    def _portfolio_id(self, portfolio: PortfolioSnapshot) -> int:
-        from ainvestor.portfolio.manager import PortfolioManager
-
-        return PortfolioManager(self.db).get_or_create_portfolio().id
-
     def _log_rejection(
-        self, proposal: TradeProposal, reasons: list[str], cycle_id: str | None
+        self,
+        proposal: TradeProposal,
+        reasons: list[str],
+        cycle_id: str | None,
+        portfolio_id: int | None = None,
     ) -> None:
         event = RiskEvent(
             event_type="proposal_rejected",
             symbol=proposal.symbol,
             details="; ".join(reasons),
             cycle_id=cycle_id,
+            portfolio_id=portfolio_id,
         )
         self.db.add(event)
         self.db.commit()

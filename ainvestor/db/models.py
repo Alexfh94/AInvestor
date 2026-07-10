@@ -26,8 +26,10 @@ class Portfolio(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     mode: Mapped[str] = mapped_column(String(20), default="paper")
+    profile: Mapped[str] = mapped_column(String(20), default="conservative", index=True)
     quote_balance: Mapped[float] = mapped_column(Float, default=100.0)
     quote_currency: Mapped[str] = mapped_column(String(10), default="USDT")
+    initial_balance: Mapped[float] = mapped_column(Float, default=100.0)
     realized_pnl: Mapped[float] = mapped_column(Float, default=0.0)
     kill_switch_active: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=app_now)
@@ -83,6 +85,7 @@ class AIDecision(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     cycle_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    profile: Mapped[str] = mapped_column(String(20), default="conservative", index=True)
     model: Mapped[str] = mapped_column(String(50))
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     hold: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
@@ -105,6 +108,7 @@ class DecisionOutcome(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     cycle_id: Mapped[str] = mapped_column(String(64), index=True)
+    profile: Mapped[str] = mapped_column(String(20), default="conservative", index=True)
     record_type: Mapped[str] = mapped_column(String(30))
     symbol: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
     action: Mapped[str] = mapped_column(String(10))
@@ -156,6 +160,7 @@ class RiskEvent(Base):
     symbol: Mapped[str | None] = mapped_column(String(20), nullable=True)
     details: Mapped[str | None] = mapped_column(Text, nullable=True)
     cycle_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    portfolio_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=app_now)
 
 
@@ -164,6 +169,7 @@ class CycleRun(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     cycle_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    profile: Mapped[str] = mapped_column(String(20), default="conservative", index=True)
     status: Mapped[str] = mapped_column(String(20), default="running")
     started_at: Mapped[datetime] = mapped_column(DateTime, default=app_now)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -331,6 +337,7 @@ def _migrate_db() -> None:
     table_names = inspector.get_table_names()
 
     _migrate_utc_timestamps_to_madrid()
+    _migrate_portfolio_profiles()
 
     if "ai_decisions" in table_names:
         cols = {c["name"] for c in inspector.get_columns("ai_decisions")}
@@ -378,6 +385,85 @@ def _migrate_db() -> None:
     _backfill_decision_summaries()
 
 
+def _migrate_portfolio_profiles() -> None:
+    """Add profile columns and ensure conservative + aggressive paper portfolios."""
+    from sqlalchemy import inspect, text
+
+    from ainvestor.config import get_profile_initial_balance
+    from ainvestor.portfolio.profiles import PROFILE_AGGRESSIVE, PROFILE_CONSERVATIVE
+
+    inspector = inspect(engine)
+    if "portfolios" not in inspector.get_table_names():
+        return
+
+    cols = {c["name"] for c in inspector.get_columns("portfolios")}
+    with engine.begin() as conn:
+        if "profile" not in cols:
+            conn.execute(
+                text(
+                    "ALTER TABLE portfolios ADD COLUMN profile VARCHAR(20) "
+                    "DEFAULT 'conservative'"
+                )
+            )
+        if "initial_balance" not in cols:
+            conn.execute(
+                text(
+                    "ALTER TABLE portfolios ADD COLUMN initial_balance FLOAT "
+                    "DEFAULT 100.0"
+                )
+            )
+
+    for table, col in (
+        ("ai_decisions", "profile"),
+        ("decision_outcomes", "profile"),
+        ("cycle_runs", "profile"),
+        ("risk_events", "portfolio_id"),
+    ):
+        if table not in inspector.get_table_names():
+            continue
+        table_cols = {c["name"] for c in inspector.get_columns(table)}
+        if col not in table_cols:
+            col_type = "INTEGER" if col == "portfolio_id" else "VARCHAR(20) DEFAULT 'conservative'"
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"))
+
+    settings = get_settings()
+    db = SessionLocal()
+    try:
+        existing = db.query(Portfolio).filter(Portfolio.mode == settings.trading_mode).all()
+        if existing:
+            for p in existing:
+                if not getattr(p, "profile", None) or p.profile in ("", "default"):
+                    p.profile = PROFILE_CONSERVATIVE
+                if not p.initial_balance:
+                    p.initial_balance = get_profile_initial_balance(PROFILE_CONSERVATIVE)
+            db.commit()
+
+        for profile in (PROFILE_CONSERVATIVE, PROFILE_AGGRESSIVE):
+            row = (
+                db.query(Portfolio)
+                .filter(
+                    Portfolio.mode == settings.trading_mode,
+                    Portfolio.profile == profile,
+                )
+                .first()
+            )
+            if row is None:
+                initial = get_profile_initial_balance(profile)
+                db.add(
+                    Portfolio(
+                        mode=settings.trading_mode,
+                        profile=profile,
+                        quote_balance=initial,
+                        initial_balance=initial,
+                        quote_currency=settings.paper_quote_currency,
+                    )
+                )
+        db.commit()
+    finally:
+        db.close()
+
+
 def _backfill_decision_summaries() -> None:
     from ainvestor.engine.ai_agent import parse_trade_proposal
 
@@ -400,30 +486,42 @@ def _backfill_decision_summaries() -> None:
 
 
 def _sync_paper_balance() -> None:
-    """Ajusta cartera paper al saldo configurado si no hay operaciones."""
+    """Ajusta carteras paper al saldo inicial configurado si no hay operaciones."""
+    from ainvestor.config import get_profile_initial_balance
+    from ainvestor.portfolio.profiles import PROFILES
+
     settings = get_settings()
     db = SessionLocal()
     try:
-        portfolio = (
-            db.query(Portfolio)
-            .filter(Portfolio.mode == settings.trading_mode)
-            .first()
-        )
-        if portfolio is None:
-            return
-        has_trades = (
-            db.query(Trade).filter(Trade.portfolio_id == portfolio.id).count() > 0
-        )
-        has_positions = (
-            db.query(Position)
-            .filter(Position.portfolio_id == portfolio.id, Position.is_open == True)  # noqa: E712
-            .count()
-            > 0
-        )
-        if not has_trades and not has_positions:
-            portfolio.quote_balance = settings.paper_initial_balance
-            portfolio.realized_pnl = 0.0
-            db.commit()
+        for profile in PROFILES:
+            portfolio = (
+                db.query(Portfolio)
+                .filter(
+                    Portfolio.mode == settings.trading_mode,
+                    Portfolio.profile == profile,
+                )
+                .first()
+            )
+            if portfolio is None:
+                continue
+            has_trades = (
+                db.query(Trade).filter(Trade.portfolio_id == portfolio.id).count() > 0
+            )
+            has_positions = (
+                db.query(Position)
+                .filter(
+                    Position.portfolio_id == portfolio.id,
+                    Position.is_open == True,  # noqa: E712
+                )
+                .count()
+                > 0
+            )
+            if not has_trades and not has_positions:
+                initial = get_profile_initial_balance(profile)
+                portfolio.quote_balance = initial
+                portfolio.initial_balance = initial
+                portfolio.realized_pnl = 0.0
+        db.commit()
     finally:
         db.close()
 
