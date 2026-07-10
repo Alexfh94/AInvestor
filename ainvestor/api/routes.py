@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ainvestor.utils.datetime_utils import app_now_iso
+from ainvestor.utils.datetime_utils import app_now_iso, format_app_datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -54,7 +54,7 @@ async def get_trades(limit: int = 50, db: Session = Depends(get_db)):
             "fee": t.fee,
             "mode": t.mode,
             "status": t.status,
-            "executed_at": t.executed_at.isoformat(),
+            "executed_at": format_app_datetime(t.executed_at),
         }
         for t in trades
     ]
@@ -84,7 +84,7 @@ async def get_decisions(limit: int = 20, db: Session = Depends(get_db)):
                 "approved": d.approved_count,
                 "rejected": d.rejected_count,
                 "run_id": d.run_id,
-                "created_at": d.created_at.isoformat(),
+                "created_at": format_app_datetime(d.created_at),
                 "token_usage": {
                     "input_tokens": d.tokens_input or 0,
                     "output_tokens": d.tokens_output or 0,
@@ -136,7 +136,7 @@ async def get_ai_usage(db: Session = Depends(get_db)):
         "recent": [
             {
                 "cycle_id": d.cycle_id[:8],
-                "created_at": d.created_at.isoformat(),
+                "created_at": format_app_datetime(d.created_at),
                 "total_tokens": d.tokens_total or 0,
                 "input_tokens": d.tokens_input or 0,
                 "output_tokens": d.tokens_output or 0,
@@ -170,8 +170,8 @@ async def get_learning(db: Session = Depends(get_db)):
                 "summary": r.summary,
                 "reasoning": r.reasoning,
                 "notes": r.outcome_notes,
-                "created_at": r.created_at.isoformat(),
-                "evaluated_at": r.evaluated_at.isoformat() if r.evaluated_at else None,
+                "created_at": format_app_datetime(r.created_at),
+                "evaluated_at": format_app_datetime(r.evaluated_at),
             }
             for r in recent
         ],
@@ -190,8 +190,8 @@ async def get_cycles(limit: int = 20, db: Session = Depends(get_db)):
         {
             "cycle_id": c.cycle_id,
             "status": c.status,
-            "started_at": c.started_at.isoformat(),
-            "completed_at": c.completed_at.isoformat() if c.completed_at else None,
+            "started_at": format_app_datetime(c.started_at),
+            "completed_at": format_app_datetime(c.completed_at),
             "error": c.error,
         }
         for c in cycles

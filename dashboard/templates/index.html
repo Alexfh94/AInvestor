@@ -215,7 +215,10 @@
 
     <script>
         const fmt = (n, d=2) => Number(n).toFixed(d);
-        const fmtDate = (s) => new Date(s).toLocaleString('es-ES');
+        const fmtDate = (s) => {
+            if (!s) return '—';
+            return new Date(s).toLocaleString('es-ES', { timeZone: 'Europe/Madrid' });
+        };
         let perfChart = null;
         let chartRefreshTimer = null;
 

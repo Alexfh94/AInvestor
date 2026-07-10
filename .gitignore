@@ -13,3 +13,9 @@ build/
 data/
 *.log
 deploy/oracle/logs/
+deploy/oracle/images-*.json
+deploy/oracle/ingress-rules.json
+deploy/oracle/instance-metadata.json
+deploy/oracle/route-rules.json
+deploy/oracle/shape-a1.json
+deploy/oracle/subnets.json

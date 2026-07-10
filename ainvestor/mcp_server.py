@@ -5,7 +5,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
-from ainvestor.utils.datetime_utils import app_now_iso
+from ainvestor.utils.datetime_utils import app_now_iso, format_app_datetime
 
 from mcp.server.fastmcp import FastMCP
 from sqlalchemy import create_engine
@@ -155,7 +155,7 @@ def get_trade_history(limit: int = 20) -> str:
                     "amount": t.amount,
                     "price": t.price,
                     "value_usdt": t.value_usdt,
-                    "executed_at": t.executed_at.isoformat(),
+                    "executed_at": format_app_datetime(t.executed_at),
                 }
                 for t in trades
             ]

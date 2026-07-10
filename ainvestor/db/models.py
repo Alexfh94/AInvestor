@@ -251,11 +251,86 @@ def init_db() -> None:
     _sync_paper_balance()
 
 
+def _migrate_utc_timestamps_to_madrid() -> None:
+    """Convierte timestamps históricos guardados en UTC naive a Europe/Madrid naive."""
+    from sqlalchemy import inspect, text
+
+    from ainvestor.utils.datetime_utils import utc_naive_to_madrid_naive
+
+    migration_key = "timestamps_utc_to_madrid_v1"
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "CREATE TABLE IF NOT EXISTS app_meta "
+                "(key TEXT PRIMARY KEY, value TEXT)"
+            )
+        )
+        done = conn.execute(
+            text("SELECT value FROM app_meta WHERE key = :k"),
+            {"k": migration_key},
+        ).fetchone()
+        if done:
+            return
+
+    datetime_columns: dict[str, list[str]] = {
+        "portfolios": ["created_at", "updated_at"],
+        "positions": ["opened_at", "closed_at"],
+        "trades": ["executed_at"],
+        "ai_decisions": ["created_at"],
+        "decision_outcomes": ["created_at", "evaluated_at"],
+        "market_snapshots": ["captured_at"],
+        "portfolio_value_history": ["captured_at"],
+        "risk_events": ["created_at"],
+        "cycle_runs": ["started_at", "completed_at"],
+        "news_records": ["published_at", "captured_at"],
+        "sentiment_records": ["captured_at"],
+        "derivatives_records": ["captured_at"],
+        "stock_portfolios": ["created_at", "updated_at"],
+        "stock_positions": ["opened_at", "closed_at"],
+    }
+
+    inspector = inspect(engine)
+    db = SessionLocal()
+    try:
+        from sqlalchemy import update
+
+        for table, columns in datetime_columns.items():
+            if table not in inspector.get_table_names():
+                continue
+            table_cols = {c["name"] for c in inspector.get_columns(table)}
+            model = Base.metadata.tables[table]
+            pk_cols = [c.name for c in model.primary_key.columns]
+            for col in columns:
+                if col not in table_cols:
+                    continue
+                rows = db.execute(model.select()).fetchall()
+                for row in rows:
+                    value = row._mapping[col]
+                    if value is None:
+                        continue
+                    converted = utc_naive_to_madrid_naive(value)
+                    if converted == value:
+                        continue
+                    where = [model.c[name] == row._mapping[name] for name in pk_cols]
+                    db.execute(update(model).where(*where).values({col: converted}))
+        db.commit()
+    finally:
+        db.close()
+
+    with engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO app_meta (key, value) VALUES (:k, :v)"),
+            {"k": migration_key, "v": "done"},
+        )
+
+
 def _migrate_db() -> None:
     from sqlalchemy import inspect, text
 
     inspector = inspect(engine)
     table_names = inspector.get_table_names()
+
+    _migrate_utc_timestamps_to_madrid()
 
     if "ai_decisions" in table_names:
         cols = {c["name"] for c in inspector.get_columns("ai_decisions")}

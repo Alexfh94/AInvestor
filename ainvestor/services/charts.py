@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from ainvestor.utils.datetime_utils import app_now, app_now_iso
+from ainvestor.utils.datetime_utils import app_now, app_now_iso, format_app_datetime
 
 from sqlalchemy.orm import Session
 
@@ -62,7 +62,7 @@ async def build_performance_chart(
 
     markers = [
         {
-            "t": t.executed_at.isoformat(),
+            "t": format_app_datetime(t.executed_at),
             "symbol": t.symbol,
             "side": t.side,
             "price": t.price,
@@ -101,13 +101,13 @@ async def _portfolio_chart(
     if not history:
         series.append(
             {
-                "t": portfolio.created_at.isoformat(),
+                "t": format_app_datetime(portfolio.created_at),
                 "value": settings.paper_initial_balance,
             }
         )
     else:
         series = [
-            {"t": h.captured_at.isoformat(), "value": h.total_value_usdt}
+            {"t": format_app_datetime(h.captured_at), "value": h.total_value_usdt}
             for h in history
         ]
 
@@ -166,7 +166,7 @@ async def _asset_chart(
             perf = ((s.last_price - first_price) / first_price * 100) if first_price else 0
             series.append(
                 {
-                    "t": s.captured_at.isoformat(),
+                    "t": format_app_datetime(s.captured_at),
                     "value": s.last_price,
                     "performance_pct": round(perf, 2),
                 }
