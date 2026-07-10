@@ -39,6 +39,13 @@ class Settings(BaseSettings):
     ai_use_fast: bool = False
     ai_fallback_enabled: bool = True
 
+    def effective_ai_model(self) -> str:
+        """Resolve Cursor model id; strip -fast unless ai_use_fast is enabled."""
+        base = self.ai_model.removesuffix("-fast") if self.ai_model.endswith("-fast") else self.ai_model
+        if self.ai_use_fast and not base.endswith("-fast"):
+            return f"{base}-fast"
+        return base
+
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
 

@@ -175,7 +175,7 @@ class CycleRunner:
             ai_record = AIDecision(
                 cycle_id=cycle_id,
                 profile=self.profile,
-                model=self.ai.settings.ai_model,
+                model=self.ai.settings.effective_ai_model(),
                 summary=decision.summary,
                 hold=decision.hold,
                 prompt_summary=prompt[:2000],

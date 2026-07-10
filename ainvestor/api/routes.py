@@ -394,7 +394,7 @@ async def get_config(profile: str = Depends(_profile_param)):
         "profile": profile,
         "profile_label": PROFILE_LABELS.get(profile, profile),
         "trading_mode": settings.trading_mode,
-        "ai_model": settings.ai_model,
+        "ai_model": settings.effective_ai_model(),
         "intervals": {
             "ai_cycle": settings.ai_cycle_interval,
             "risk_monitor": settings.risk_monitor_interval,
