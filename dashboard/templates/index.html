@@ -137,6 +137,70 @@
         }
         @keyframes spin { to { transform: rotate(360deg); } }
         .loading-label { color: var(--muted); font-size: 0.875rem; }
+        .table-scroll {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+            width: 100%;
+            margin: 0 -0.25rem;
+            padding: 0 0.25rem;
+        }
+        .table-scroll table { min-width: 520px; }
+        .table-scroll table.table-compact { min-width: 400px; }
+
+        @media (max-width: 768px) {
+            body { padding: 0.75rem; }
+            h1 { font-size: 1.2rem; line-height: 1.35; }
+            .subtitle { font-size: 0.8rem; margin-bottom: 1rem; }
+            .grid { grid-template-columns: repeat(2, 1fr); gap: 0.65rem; }
+            .grid-2 { grid-template-columns: 1fr; }
+            .card { padding: 1rem; }
+            .card h2 { font-size: 0.75rem; }
+            .metric { font-size: 1.3rem; }
+            .metric-sm { font-size: 1rem; }
+            .actions {
+                flex-direction: column;
+                gap: 0.5rem;
+                margin-bottom: 0.75rem;
+            }
+            .actions button { width: 100%; padding: 0.65rem 1rem; }
+            #token-usage-bar { width: 100%; }
+            .token-pill { display: block; font-size: 0.75rem; line-height: 1.4; }
+            .tabs {
+                gap: 0.35rem;
+                margin-bottom: 0.75rem;
+                overflow-x: auto;
+                flex-wrap: nowrap;
+                -webkit-overflow-scrolling: touch;
+                padding-bottom: 0.35rem;
+            }
+            .tabs .tab {
+                flex: 0 0 auto;
+                white-space: nowrap;
+                padding: 0.5rem 0.75rem;
+                font-size: 0.8rem;
+            }
+            .profile-tabs { margin-bottom: 0.75rem; }
+            .chart-wrap { height: 260px; }
+            .chart-controls {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 0.5rem;
+            }
+            .chart-controls label { font-size: 0.8rem; }
+            .chart-controls select,
+            .chart-controls button { width: 100%; }
+            #chart-summary { font-size: 0.8rem; }
+            .summary-text { max-width: none; font-size: 0.8rem; }
+            .content-wrap { min-height: 200px; }
+            th, td { padding: 0.5rem 0.55rem; font-size: 0.8rem; }
+            .alert { font-size: 0.8rem; }
+        }
+
+        @media (max-width: 420px) {
+            body { padding: 0.5rem; }
+            .grid { grid-template-columns: 1fr; }
+            .metric { font-size: 1.15rem; }
+        }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
@@ -277,6 +341,10 @@
         let loadingDepth = 0;
         const PROFILE_LABELS = { conservative: 'Conservadora', aggressive: 'Agresiva' };
 
+        function tableScroll(html) {
+            return `<div class="table-scroll">${html}</div>`;
+        }
+
         function setLoading(active, message) {
             const overlay = document.getElementById('loading-overlay');
             const label = document.getElementById('loading-label');
@@ -347,7 +415,9 @@
         }
 
         function switchTab(name) {
-            document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.panel === name));
+            document.querySelectorAll('.tabs:not(.profile-tabs) .tab').forEach(t =>
+                t.classList.toggle('active', t.dataset.panel === name)
+            );
             document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + name));
             if (name === 'charts') {
                 loadChart();
@@ -386,12 +456,13 @@
                 macro.market_cap_change_24h_pct != null ? `<p>Mcap 24h: <span class="${macro.market_cap_change_24h_pct >= 0 ? 'positive' : 'negative'}">${macro.market_cap_change_24h_pct >= 0 ? '+' : ''}${fmt(macro.market_cap_change_24h_pct, 2)}%</span></p>` : '',
             ];
             if (data.tickers && data.tickers.length) {
-                lines.push('<table><thead><tr><th>Par</th><th>Precio</th><th>24h</th><th>Spread</th></tr></thead><tbody>');
+                let tbl = '<table><thead><tr><th>Par</th><th>Precio</th><th>24h</th><th>Spread</th></tr></thead><tbody>';
                 data.tickers.slice(0, 8).forEach(t => {
                     const chg = t.change_pct != null ? `${t.change_pct >= 0 ? '+' : ''}${fmt(t.change_pct, 2)}%` : '—';
-                    lines.push(`<tr><td>${t.symbol}</td><td>${fmt(t.last, 4)}</td><td class="${(t.change_pct||0) >= 0 ? 'positive' : 'negative'}">${chg}</td><td>${t.spread_pct != null ? fmt(t.spread_pct, 3) + '%' : '—'}</td></tr>`);
+                    tbl += `<tr><td>${t.symbol}</td><td>${fmt(t.last, 4)}</td><td class="${(t.change_pct||0) >= 0 ? 'positive' : 'negative'}">${chg}</td><td>${t.spread_pct != null ? fmt(t.spread_pct, 3) + '%' : '—'}</td></tr>`;
                 });
-                lines.push('</tbody></table>');
+                tbl += '</tbody></table>';
+                lines.push(tableScroll(tbl));
             } else {
                 lines.push('<p class="muted">Ejecuta un ciclo IA para ver tickers actualizados.</p>');
             }
@@ -401,22 +472,22 @@
         function renderSignals(signals) {
             const el = document.getElementById('market-signals');
             if (!signals.length) { el.innerHTML = '<p class="muted">Sin señales — ejecuta un ciclo</p>'; return; }
-            el.innerHTML = `<table><thead><tr><th>Par</th><th>Tendencia</th><th>Conv.</th><th>RSI</th><th>ATR%</th><th>MTF</th></tr></thead><tbody>` +
+            el.innerHTML = tableScroll(`<table><thead><tr><th>Par</th><th>Tendencia</th><th>Conv.</th><th>RSI</th><th>ATR%</th><th>MTF</th></tr></thead><tbody>` +
                 signals.map(s => {
                     const mtf = [s.trend_4h ? `4h:${s.trend_4h}` : '', s.trend_1d ? `1d:${s.trend_1d}` : ''].filter(Boolean).join(' ');
                     const trendCls = s.trend === 'bullish' ? 'positive' : s.trend === 'bearish' ? 'negative' : 'muted';
                     return `<tr><td>${s.symbol}</td><td class="${trendCls}">${s.trend}</td><td>${s.conviction_score}</td><td>${s.rsi ?? '—'}</td><td>${s.atr_pct ?? '—'}</td><td class="muted" style="font-size:0.8rem">${mtf || '—'}</td></tr>`;
-                }).join('') + '</tbody></table>';
+                }).join('') + '</tbody></table>');
         }
 
         function renderDerivatives(derivatives) {
             const el = document.getElementById('derivatives-panel');
             if (!derivatives.length) { el.innerHTML = '<p class="muted">Sin datos de derivados</p>'; return; }
-            el.innerHTML = `<table><thead><tr><th>Par</th><th>Funding</th><th>OI</th><th>Mark</th></tr></thead><tbody>` +
+            el.innerHTML = tableScroll(`<table><thead><tr><th>Par</th><th>Funding</th><th>OI</th><th>Mark</th></tr></thead><tbody>` +
                 derivatives.slice(0, 10).map(d => {
                     const cls = d.funding_rate_pct > 0 ? 'negative' : 'positive';
                     return `<tr><td>${d.symbol}</td><td class="${cls}">${d.funding_rate_pct >= 0 ? '+' : ''}${fmt(d.funding_rate_pct, 4)}%</td><td>${Number(d.open_interest).toLocaleString('es-ES')}</td><td>${fmt(d.mark_price, 2)}</td></tr>`;
-                }).join('') + '</tbody></table>';
+                }).join('') + '</tbody></table>');
         }
 
         function renderNewsSentiment(data) {
@@ -658,7 +729,7 @@
                 el.innerHTML = '<p class="muted">Sin posiciones abiertas</p>';
                 return;
             }
-            el.innerHTML = `<table><thead><tr>
+            el.innerHTML = tableScroll(`<table><thead><tr>
                 <th>Activo</th><th>Par</th><th>Cantidad</th><th>Valor USDT</th><th>% cartera</th><th>Entrada</th><th>Actual</th><th>P&L</th>
             </tr></thead><tbody>` + data.positions.map(p => `<tr>
                 <td><strong>${p.asset}</strong></td>
@@ -669,20 +740,20 @@
                 <td>${fmt(p.entry_price, 4)}</td>
                 <td>${fmt(p.current_price, 4)}</td>
                 <td class="${p.unrealized_pnl >= 0 ? 'positive' : 'negative'}">${p.unrealized_pnl >= 0 ? '+' : ''}${fmt(p.unrealized_pnl)}</td>
-            </tr>`).join('') + '</tbody></table>';
+            </tr>`).join('') + '</tbody></table>');
         }
 
         function renderTrades(trades) {
             const el = document.getElementById('trades-table');
             if (!trades.length) { el.innerHTML = '<p class="muted">Sin operaciones</p>'; return; }
-            el.innerHTML = `<table><thead><tr><th>Par</th><th>Lado</th><th>Cantidad</th><th>Valor</th><th>Fecha</th></tr></thead><tbody>` +
+            el.innerHTML = tableScroll(`<table><thead><tr><th>Par</th><th>Lado</th><th>Cantidad</th><th>Valor</th><th>Fecha</th></tr></thead><tbody>` +
                 trades.map(t => `<tr>
                     <td>${t.symbol}</td>
                     <td class="${t.side === 'buy' ? 'positive' : 'negative'}">${t.side.toUpperCase()}</td>
                     <td>${fmt(t.amount, 6)}</td>
                     <td>${fmt(t.value_usdt)} USDT</td>
                     <td>${fmtDate(t.executed_at)}</td>
-                </tr>`).join('') + '</tbody></table>';
+                </tr>`).join('') + '</tbody></table>');
         }
 
         function outcomeBadge(outcome) {
@@ -694,7 +765,7 @@
         function renderDecisions(decisions) {
             const el = document.getElementById('decisions-table');
             if (!decisions.length) { el.innerHTML = '<p class="muted">Sin decisiones</p>'; return; }
-            el.innerHTML = `<table><thead><tr>
+            el.innerHTML = tableScroll(`<table><thead><tr>
                 <th>Fecha</th><th>Tipo</th><th>Resumen</th><th>Tokens</th><th>Ops</th><th>Evaluación</th>
             </tr></thead><tbody>` + decisions.map(d => {
                 const tipo = d.hold ? '<span class="badge hold">HOLD</span>' : '<span class="badge paper">TRADE</span>';
@@ -713,7 +784,7 @@
                     <td>${d.approved}/${d.rejected}</td>
                     <td style="font-size:0.8rem">${evals}</td>
                 </tr>`;
-            }).join('') + '</tbody></table>';
+            }).join('') + '</tbody></table>');
         }
 
         function renderLearning(data) {
@@ -723,8 +794,8 @@
             let html = `<p style="margin-bottom:0.75rem"><strong>${acc}</strong> — ${s.evaluated || 0} evaluadas, ${s.pending_evaluation || 0} pendientes</p>`;
             html += `<pre style="white-space:pre-wrap;font-size:0.85rem;color:var(--muted);margin-bottom:1rem">${data.summary || ''}</pre>`;
             if (data.recent && data.recent.length) {
-                html += `<table><thead><tr><th>Fecha</th><th>Acción</th><th>Activo</th><th>Estado</th><th>Resultado</th><th>Notas</th></tr></thead><tbody>`;
-                html += data.recent.map(r => `<tr>
+                let tbl = '<table><thead><tr><th>Fecha</th><th>Acción</th><th>Activo</th><th>Estado</th><th>Resultado</th><th>Notas</th></tr></thead><tbody>';
+                tbl += data.recent.map(r => `<tr>
                     <td>${fmtDate(r.created_at)}</td>
                     <td>${r.action.toUpperCase()}</td>
                     <td>${r.symbol || '—'}</td>
@@ -732,7 +803,8 @@
                     <td>${outcomeBadge(r.outcome)}${r.return_pct != null ? ' ' + (r.return_pct >= 0 ? '+' : '') + fmt(r.return_pct, 1) + '%' : ''}</td>
                     <td class="summary-text">${r.notes || r.reasoning || r.summary || '—'}</td>
                 </tr>`).join('');
-                html += '</tbody></table>';
+                tbl += '</tbody></table>';
+                html += tableScroll(tbl);
             }
             el.innerHTML = html;
         }
