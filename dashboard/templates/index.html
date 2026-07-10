@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AInvestor Dashboard</title>
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <style>
+        :root {
+            --bg: #0f1419;
+            --card: #1a2332;
+            --border: #2d3a4f;
+            --text: #e7ecf3;
+            --muted: #8b9cb3;
+            --green: #22c55e;
+            --red: #ef4444;
+            --accent: #3b82f6;
+            --amber: #f59e0b;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.5;
+            padding: 1.5rem;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        h1 { font-size: 1.5rem; margin-bottom: 0.25rem; }
+        .subtitle { color: var(--muted); margin-bottom: 1.5rem; font-size: 0.9rem; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+        .grid-2 { grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+        .card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1.25rem;
+        }
+        .card h2 { font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.75rem; }
+        .metric { font-size: 1.75rem; font-weight: 600; }
+        .metric-sm { font-size: 1.1rem; font-weight: 600; }
+        .positive { color: var(--green); }
+        .negative { color: var(--red); }
+        .muted { color: var(--muted); }
+        table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+        th, td { padding: 0.6rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
+        th { color: var(--muted); font-weight: 500; }
+        .actions { display: flex; gap: 0.75rem; margin-bottom: 1rem; flex-wrap: wrap; }
+        button {
+            background: var(--accent);
+            color: white;
+            border: none;
+            padding: 0.5rem 1rem;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.875rem;
+        }
+        button.danger { background: var(--red); }
+        button.secondary { background: #334155; }
+        button:hover { opacity: 0.9; }
+        .badge {
+            display: inline-block;
+            padding: 0.15rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 500;
+        }
+        .badge.paper { background: #1e3a5f; color: #93c5fd; }
+        .badge.hold { background: #422006; color: #fcd34d; }
+        .badge.good { background: #14532d; color: #86efac; }
+        .badge.bad { background: #450a0a; color: #fca5a5; }
+        .badge.neutral { background: #1e293b; color: #94a3b8; }
+        .badge.pending { background: #312e81; color: #c4b5fd; }
+        .alert { padding: 0.75rem 1rem; border-radius: 6px; margin-bottom: 1rem; font-size: 0.875rem; }
+        .alert.info { background: #1e3a5f; border: 1px solid #2563eb; }
+        .alert.warn { background: #422006; border: 1px solid var(--amber); }
+        .alert.error { background: #450a0a; border: 1px solid var(--red); }
+        .alloc-bar { height: 8px; background: #0f172a; border-radius: 4px; overflow: hidden; margin-top: 0.5rem; }
+        .alloc-fill { height: 100%; background: var(--accent); border-radius: 4px; }
+        .alloc-row { margin-bottom: 0.75rem; }
+        .alloc-header { display: flex; justify-content: space-between; font-size: 0.875rem; }
+        .summary-text { font-size: 0.85rem; color: var(--muted); max-width: 420px; }
+        .section-title { font-size: 1rem; margin: 0 0 1rem; color: var(--text); }
+        .tabs { display: flex; gap: 0.5rem; margin-bottom: 1.25rem; border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; }
+        .tab {
+            background: transparent;
+            color: var(--muted);
+            border: 1px solid transparent;
+            padding: 0.5rem 1rem;
+        }
+        .tab.active { color: var(--text); border-color: var(--border); background: var(--card); }
+        .panel { display: none; }
+        .panel.active { display: block; }
+        .chart-wrap { position: relative; height: 380px; margin-bottom: 1rem; }
+        .chart-controls { display: flex; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 1rem; align-items: center; }
+        .chart-controls select { background: var(--card); color: var(--text); border: 1px solid var(--border); padding: 0.4rem 0.6rem; border-radius: 6px; }
+        .token-pill { font-size: 0.8rem; color: var(--muted); }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+</head>
+<body>
+    <h1>AInvestor</h1>
+    <p class="subtitle">Trading crypto asistido por IA — modo paper</p>
+
+    <div class="tabs">
+        <button class="tab active" data-panel="dashboard" onclick="switchTab('dashboard')">Dashboard</button>
+        <button class="tab" data-panel="charts" onclick="switchTab('charts')">Gráficas</button>
+    </div>
+
+    <div id="panel-dashboard" class="panel active">
+    <div class="actions">
+        <button id="btn-cycle" hx-post="/api/cycle/run" hx-target="#cycle-result" hx-swap="innerHTML" hx-indicator="#cycle-loading">
+            Ejecutar ciclo IA
+        </button>
+        <button class="danger" hx-post="/api/kill-switch/on" hx-swap="none" hx-on::after-request="onKillSwitch(event)">
+            Activar kill switch
+        </button>
+        <button class="secondary" hx-post="/api/kill-switch/off" hx-swap="none" hx-on::after-request="onKillSwitch(event)">
+            Desactivar kill switch
+        </button>
+        <button class="secondary" onclick="refreshAll()">Actualizar</button>
+        <span id="token-usage-bar"></span>
+    </div>
+
+    <div id="kill-status"></div>
+    <div id="cycle-loading" class="muted" style="display:none;margin-bottom:0.5rem">Ejecutando ciclo IA…</div>
+    <div id="cycle-result"></div>
+
+    <div class="grid" id="metrics">
+        <div class="card"><div class="muted">Cargando métricas…</div></div>
+    </div>
+
+    <div class="grid grid-2" style="margin-bottom: 1.5rem;">
+        <div class="card">
+            <h2>Inversión por activo</h2>
+            <div id="allocations"><p class="muted">Cargando…</p></div>
+        </div>
+        <div class="card">
+            <h2>Distribución cartera</h2>
+            <div id="distribution"><p class="muted">Cargando…</p></div>
+        </div>
+    </div>
+
+    <div class="card" style="margin-bottom: 1.5rem;">
+        <h2>Posiciones abiertas</h2>
+        <div id="positions"><p class="muted">Cargando…</p></div>
+    </div>
+
+    <div class="grid grid-2">
+        <div class="card">
+            <h2>Últimas operaciones</h2>
+            <div id="trades-table"><p class="muted">Cargando…</p></div>
+        </div>
+        <div class="card">
+            <h2>Decisiones IA</h2>
+            <div id="decisions-table"><p class="muted">Cargando…</p></div>
+        </div>
+    </div>
+
+    <div class="card" style="margin-top: 1.5rem;">
+        <h2>Aprendizaje — historial evaluado</h2>
+        <div id="learning-panel"><p class="muted">Cargando…</p></div>
+    </div>
+    </div>
+
+    <div id="panel-charts" class="panel">
+        <div class="card">
+            <h2>Rendimiento</h2>
+            <div class="chart-controls">
+                <label class="muted">Ver:</label>
+                <select id="chart-symbol" onchange="loadChart()">
+                    <option value="portfolio">Cartera total (USDT)</option>
+                </select>
+                <label class="muted">Periodo:</label>
+                <select id="chart-hours" onchange="loadChart()">
+                    <option value="24">24 h</option>
+                    <option value="48" selected>48 h</option>
+                    <option value="168">7 días</option>
+                </select>
+                <button class="secondary" onclick="loadChart()">Actualizar gráfica</button>
+                <span id="chart-summary" class="muted"></span>
+            </div>
+            <div class="chart-wrap">
+                <canvas id="perf-chart"></canvas>
+            </div>
+            <p class="muted" style="font-size:0.8rem">
+                ▲ Compra &nbsp; ▼ Venta — Los marcadores muestran operaciones ejecutadas en paper.
+            </p>
+        </div>
+    </div>
+
+    <script>
+        const fmt = (n, d=2) => Number(n).toFixed(d);
+        const fmtDate = (s) => new Date(s).toLocaleString('es-ES');
+        let perfChart = null;
+        let chartRefreshTimer = null;
+
+        function switchTab(name) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.panel === name));
+            document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + name));
+            if (name === 'charts') {
+                loadChart();
+                if (!chartRefreshTimer) chartRefreshTimer = setInterval(loadChart, 60000);
+            }
+        }
+
+        function refreshAll() {
+            loadPortfolio();
+            loadTrades();
+            loadDecisions();
+            loadLearning();
+            loadTokenUsage();
+        }
+
+        async function loadPortfolio() {
+            try {
+                const r = await fetch('/api/portfolio');
+                const data = await r.json();
+                renderMetrics(data);
+                renderAllocations(data);
+                renderDistribution(data);
+                renderPositions(data);
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        async function loadTrades() {
+            try {
+                const r = await fetch('/api/trades?limit=10');
+                renderTrades(await r.json());
+            } catch (e) {}
+        }
+
+        async function loadDecisions() {
+            try {
+                const r = await fetch('/api/decisions?limit=10');
+                renderDecisions(await r.json());
+            } catch (e) {}
+        }
+
+        async function loadLearning() {
+            try {
+                const r = await fetch('/api/learning');
+                renderLearning(await r.json());
+            } catch (e) {}
+        }
+
+        async function loadTokenUsage() {
+            try {
+                const r = await fetch('/api/ai/usage');
+                const data = await r.json();
+                const el = document.getElementById('token-usage-bar');
+                if (!el) return;
+                el.innerHTML = `<span class="token-pill">IA: ${data.cycles} ciclos · `
+                    + `${(data.total_tokens || 0).toLocaleString('es-ES')} tokens `
+                    + `(in: ${(data.total_input_tokens || 0).toLocaleString('es-ES')}, `
+                    + `out: ${(data.total_output_tokens || 0).toLocaleString('es-ES')})</span>`;
+            } catch (e) {}
+        }
+
+        async function loadChart() {
+            const symbol = document.getElementById('chart-symbol').value;
+            const hours = document.getElementById('chart-hours').value;
+            try {
+                const r = await fetch(`/api/charts/performance?hours=${hours}&symbol=${encodeURIComponent(symbol)}`);
+                const data = await r.json();
+                renderChart(data);
+                populateSymbolSelect(data.symbols || []);
+                const sum = document.getElementById('chart-summary');
+                if (data.mode === 'portfolio' && data.summary) {
+                    const s = data.summary;
+                    const cls = s.return_pct >= 0 ? 'positive' : 'negative';
+                    sum.innerHTML = `Inicial: ${fmt(s.initial_usdt)} → Actual: <span class="${cls}">${fmt(s.current_usdt)} USDT (${s.return_pct >= 0 ? '+' : ''}${fmt(s.return_pct, 1)}%)</span>`;
+                } else if (data.series.length) {
+                    const last = data.series[data.series.length - 1];
+                    sum.textContent = last.performance_pct != null
+                        ? `Rendimiento periodo: ${last.performance_pct >= 0 ? '+' : ''}${fmt(last.performance_pct, 1)}%`
+                        : `Último precio: ${fmt(last.value, 4)} USDT`;
+                } else {
+                    sum.textContent = 'Sin datos aún — se irán acumulando cada 15 min';
+                }
+            } catch (e) { console.error(e); }
+        }
+
+        function populateSymbolSelect(symbols) {
+            const sel = document.getElementById('chart-symbol');
+            const current = sel.value;
+            const opts = new Set(['portfolio', ...symbols]);
+            const html = ['<option value="portfolio">Cartera total (USDT)</option>'];
+            symbols.forEach(s => {
+                const asset = s.split('/')[0];
+                html.push(`<option value="${s}">${asset} (${s})</option>`);
+            });
+            if (sel.options.length !== opts.size) {
+                sel.innerHTML = html.join('');
+                if ([...opts].includes(current)) sel.value = current;
+            }
+        }
+
+        function renderChart(data) {
+            const ctx = document.getElementById('perf-chart').getContext('2d');
+            const lineData = data.series.map(p => ({ x: p.t, y: p.value }));
+            const buyMarkers = data.markers.filter(m => m.side === 'buy').map(m => ({ x: m.t, y: m.price }));
+            const sellMarkers = data.markers.filter(m => m.side === 'sell').map(m => ({ x: m.t, y: m.price }));
+
+            if (perfChart) perfChart.destroy();
+
+            perfChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    datasets: [
+                        {
+                            label: data.label,
+                            data: lineData,
+                            borderColor: '#3b82f6',
+                            backgroundColor: 'rgba(59,130,246,0.1)',
+                            fill: true,
+                            tension: 0.2,
+                            pointRadius: 2,
+                            yAxisID: 'y',
+                        },
+                        {
+                            label: 'Compras',
+                            data: buyMarkers,
+                            type: 'scatter',
+                            pointStyle: 'triangle',
+                            pointRadius: 9,
+                            pointRotation: 0,
+                            borderColor: '#22c55e',
+                            backgroundColor: '#22c55e',
+                            yAxisID: 'y',
+                        },
+                        {
+                            label: 'Ventas',
+                            data: sellMarkers,
+                            type: 'scatter',
+                            pointStyle: 'triangle',
+                            pointRadius: 9,
+                            pointRotation: 180,
+                            borderColor: '#ef4444',
+                            backgroundColor: '#ef4444',
+                            yAxisID: 'y',
+                        },
+                    ],
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: { mode: 'nearest', intersect: false },
+                    plugins: {
+                        legend: { labels: { color: '#8b9cb3' } },
+                        tooltip: {
+                            callbacks: {
+                                label: (ctx) => {
+                                    const v = ctx.parsed.y;
+                                    return `${ctx.dataset.label}: ${fmt(v, data.mode === 'portfolio' ? 2 : 4)}`;
+                                },
+                            },
+                        },
+                    },
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: { tooltipFormat: 'dd MMM HH:mm' },
+                            ticks: { color: '#8b9cb3' },
+                            grid: { color: '#2d3a4f' },
+                        },
+                        y: {
+                            ticks: { color: '#8b9cb3' },
+                            grid: { color: '#2d3a4f' },
+                        },
+                    },
+                },
+            });
+        }
+
+        function renderMetrics(data) {
+            const pnlClass = data.unrealized_pnl >= 0 ? 'positive' : 'negative';
+            document.getElementById('metrics').innerHTML = `
+                <div class="card"><h2>Valor total</h2><div class="metric">${fmt(data.total_value_usdt)} USDT</div></div>
+                <div class="card"><h2>Saldo disponible</h2><div class="metric">${fmt(data.quote_balance)} USDT</div></div>
+                <div class="card"><h2>Invertido</h2><div class="metric">${fmt(data.invested_usdt)} USDT</div></div>
+                <div class="card"><h2>Efectivo</h2><div class="metric">${fmt(data.cash_pct, 1)}%</div></div>
+                <div class="card"><h2>P&L no realizado</h2><div class="metric ${pnlClass}">${data.unrealized_pnl >= 0 ? '+' : ''}${fmt(data.unrealized_pnl)}</div></div>
+                <div class="card"><h2>P&L realizado</h2><div class="metric ${data.realized_pnl >= 0 ? 'positive' : 'negative'}">${data.realized_pnl >= 0 ? '+' : ''}${fmt(data.realized_pnl)}</div></div>
+                <div class="card"><h2>Modo</h2><div class="metric"><span class="badge paper">${data.mode}</span></div></div>
+                <div class="card"><h2>Kill switch</h2><div class="metric">${data.kill_switch_active ? '<span class="negative">ACTIVO</span>' : '<span class="positive">OFF</span>'}</div></div>
+            `;
+        }
+
+        function renderAllocations(data) {
+            const el = document.getElementById('allocations');
+            if (!data.positions || !data.positions.length) {
+                el.innerHTML = '<p class="muted">Sin inversiones activas — 100% en efectivo (USDT)</p>';
+                return;
+            }
+            el.innerHTML = data.positions.map(p => `
+                <div class="alloc-row">
+                    <div class="alloc-header">
+                        <span><strong>${p.asset}</strong> <span class="muted">(${p.symbol})</span></span>
+                        <span>${fmt(p.value_usdt)} USDT · ${fmt(p.pct_of_portfolio, 1)}%</span>
+                    </div>
+                    <div class="muted" style="font-size:0.8rem">${fmt(p.amount, 6)} ${p.asset} @ ${fmt(p.entry_price, 4)}</div>
+                    <div class="alloc-bar"><div class="alloc-fill" style="width:${Math.min(p.pct_of_portfolio, 100)}%"></div></div>
+                </div>
+            `).join('');
+        }
+
+        function renderDistribution(data) {
+            const el = document.getElementById('distribution');
+            const investedPct = data.total_value_usdt > 0 ? (data.invested_usdt / data.total_value_usdt * 100) : 0;
+            const cashPct = data.cash_pct || 100;
+            el.innerHTML = `
+                <div class="alloc-row">
+                    <div class="alloc-header"><span>Efectivo (USDT)</span><span>${fmt(data.quote_balance)} USDT · ${fmt(cashPct, 1)}%</span></div>
+                    <div class="alloc-bar"><div class="alloc-fill" style="width:${cashPct}%;background:#22c55e"></div></div>
+                </div>
+                <div class="alloc-row">
+                    <div class="alloc-header"><span>Invertido en cripto</span><span>${fmt(data.invested_usdt)} USDT · ${fmt(investedPct, 1)}%</span></div>
+                    <div class="alloc-bar"><div class="alloc-fill" style="width:${investedPct}%"></div></div>
+                </div>
+                <p class="muted" style="margin-top:0.75rem;font-size:0.85rem">Valor total de cartera: ${fmt(data.total_value_usdt)} USDT</p>
+            `;
+        }
+
+        function renderPositions(data) {
+            const el = document.getElementById('positions');
+            if (!data.positions || !data.positions.length) {
+                el.innerHTML = '<p class="muted">Sin posiciones abiertas</p>';
+                return;
+            }
+            el.innerHTML = `<table><thead><tr>
+                <th>Activo</th><th>Par</th><th>Cantidad</th><th>Valor USDT</th><th>% cartera</th><th>Entrada</th><th>Actual</th><th>P&L</th>
+            </tr></thead><tbody>` + data.positions.map(p => `<tr>
+                <td><strong>${p.asset}</strong></td>
+                <td>${p.symbol}</td>
+                <td>${fmt(p.amount, 6)}</td>
+                <td>${fmt(p.value_usdt)}</td>
+                <td>${fmt(p.pct_of_portfolio, 1)}%</td>
+                <td>${fmt(p.entry_price, 4)}</td>
+                <td>${fmt(p.current_price, 4)}</td>
+                <td class="${p.unrealized_pnl >= 0 ? 'positive' : 'negative'}">${p.unrealized_pnl >= 0 ? '+' : ''}${fmt(p.unrealized_pnl)}</td>
+            </tr>`).join('') + '</tbody></table>';
+        }
+
+        function renderTrades(trades) {
+            const el = document.getElementById('trades-table');
+            if (!trades.length) { el.innerHTML = '<p class="muted">Sin operaciones</p>'; return; }
+            el.innerHTML = `<table><thead><tr><th>Par</th><th>Lado</th><th>Cantidad</th><th>Valor</th><th>Fecha</th></tr></thead><tbody>` +
+                trades.map(t => `<tr>
+                    <td>${t.symbol}</td>
+                    <td class="${t.side === 'buy' ? 'positive' : 'negative'}">${t.side.toUpperCase()}</td>
+                    <td>${fmt(t.amount, 6)}</td>
+                    <td>${fmt(t.value_usdt)} USDT</td>
+                    <td>${fmtDate(t.executed_at)}</td>
+                </tr>`).join('') + '</tbody></table>';
+        }
+
+        function outcomeBadge(outcome) {
+            const map = { good: 'good', bad: 'bad', neutral: 'neutral', pending: 'pending' };
+            const labels = { good: 'Acertada', bad: 'Errónea', neutral: 'Neutra', pending: 'Pendiente' };
+            return `<span class="badge ${map[outcome] || 'neutral'}">${labels[outcome] || outcome}</span>`;
+        }
+
+        function renderDecisions(decisions) {
+            const el = document.getElementById('decisions-table');
+            if (!decisions.length) { el.innerHTML = '<p class="muted">Sin decisiones</p>'; return; }
+            el.innerHTML = `<table><thead><tr>
+                <th>Fecha</th><th>Tipo</th><th>Resumen</th><th>Tokens</th><th>Ops</th><th>Evaluación</th>
+            </tr></thead><tbody>` + decisions.map(d => {
+                const tipo = d.hold ? '<span class="badge hold">HOLD</span>' : '<span class="badge paper">TRADE</span>';
+                const tu = d.token_usage || {};
+                const tokens = tu.total_tokens
+                    ? `${tu.total_tokens.toLocaleString('es-ES')} <span class="muted">(${tu.input_tokens}/${tu.output_tokens})</span>`
+                    : '<span class="muted">—</span>';
+                const evals = (d.outcomes || []).map(o =>
+                    `${o.symbol || '—'} ${outcomeBadge(o.outcome)}${o.return_pct != null ? ' ' + (o.return_pct >= 0 ? '+' : '') + fmt(o.return_pct, 1) + '%' : ''}`
+                ).join('<br>') || '<span class="muted">Pendiente</span>';
+                return `<tr>
+                    <td>${fmtDate(d.created_at)}</td>
+                    <td>${tipo}</td>
+                    <td class="summary-text">${d.summary || '—'}</td>
+                    <td style="font-size:0.8rem">${tokens}</td>
+                    <td>${d.approved}/${d.rejected}</td>
+                    <td style="font-size:0.8rem">${evals}</td>
+                </tr>`;
+            }).join('') + '</tbody></table>';
+        }
+
+        function renderLearning(data) {
+            const el = document.getElementById('learning-panel');
+            const s = data.stats || {};
+            const acc = s.accuracy_pct != null ? `${s.accuracy_pct}% acierto` : 'Sin evaluaciones aún';
+            let html = `<p style="margin-bottom:0.75rem"><strong>${acc}</strong> — ${s.evaluated || 0} evaluadas, ${s.pending_evaluation || 0} pendientes</p>`;
+            html += `<pre style="white-space:pre-wrap;font-size:0.85rem;color:var(--muted);margin-bottom:1rem">${data.summary || ''}</pre>`;
+            if (data.recent && data.recent.length) {
+                html += `<table><thead><tr><th>Fecha</th><th>Acción</th><th>Activo</th><th>Estado</th><th>Resultado</th><th>Notas</th></tr></thead><tbody>`;
+                html += data.recent.map(r => `<tr>
+                    <td>${fmtDate(r.created_at)}</td>
+                    <td>${r.action.toUpperCase()}</td>
+                    <td>${r.symbol || '—'}</td>
+                    <td>${r.execution_status}</td>
+                    <td>${outcomeBadge(r.outcome)}${r.return_pct != null ? ' ' + (r.return_pct >= 0 ? '+' : '') + fmt(r.return_pct, 1) + '%' : ''}</td>
+                    <td class="summary-text">${r.notes || r.reasoning || r.summary || '—'}</td>
+                </tr>`).join('');
+                html += '</tbody></table>';
+            }
+            el.innerHTML = html;
+        }
+
+        function onKillSwitch(evt) {
+            try {
+                const data = JSON.parse(evt.detail.xhr.response);
+                const active = data.kill_switch_active;
+                const el = document.getElementById('kill-status');
+                el.className = 'alert ' + (active ? 'error' : 'info');
+                el.textContent = active
+                    ? 'Kill switch ACTIVADO — no se ejecutarán nuevas operaciones.'
+                    : 'Kill switch desactivado — operación normal.';
+                loadPortfolio();
+            } catch (e) {}
+        }
+
+        document.body.addEventListener('htmx:afterRequest', function(evt) {
+            const btn = evt.detail.elt;
+            if (btn && btn.id === 'btn-cycle') {
+                try {
+                    const r = JSON.parse(evt.detail.xhr.response);
+                    const cls = r.status === 'error' ? 'error' : 'info';
+                    const tok = r.token_usage
+                        ? `<br><span class="token-pill">Tokens: ${r.token_usage.total_tokens.toLocaleString('es-ES')} (in: ${r.token_usage.input_tokens}, out: ${r.token_usage.output_tokens}${r.token_usage.cache_read_tokens ? ', cache: ' + r.token_usage.cache_read_tokens : ''})</span>`
+                        : '';
+                    document.getElementById('cycle-result').innerHTML =
+                        `<div class="alert ${cls}"><strong>Ciclo ${r.cycle_id?.slice(0,8)}</strong> — ${r.status}<br>${r.summary || r.error || ''} (${r.approved || 0} aprob., ${r.rejected || 0} rech.)${tok}</div>`;
+                    refreshAll();
+                } catch (e) {}
+            }
+        });
+
+        refreshAll();
+        setInterval(loadPortfolio, 30000);
+        setInterval(loadTrades, 30000);
+        setInterval(loadDecisions, 60000);
+        setInterval(loadLearning, 120000);
+        setInterval(loadTokenUsage, 120000);
+    </script>
+</body>
+</html>
