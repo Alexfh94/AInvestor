@@ -1,0 +1,20 @@
+#cloud-config
+# Oracle Cloud VM bootstrap for AInvestor (Ubuntu 22.04/24.04)
+package_update: true
+package_upgrade: true
+
+packages:
+  - docker.io
+  - docker-compose-plugin
+  - git
+  - ufw
+  - curl
+
+runcmd:
+  - systemctl enable docker
+  - systemctl start docker
+  - usermod -aG docker ubuntu
+  - mkdir -p /opt/ainvestor/data
+  - ufw allow OpenSSH
+  - ufw allow 8000/tcp
+  - ufw --force enable

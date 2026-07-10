@@ -12,3 +12,4 @@ build/
 .mypy_cache/
 data/
 *.log
+deploy/oracle/logs/
