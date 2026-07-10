@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     )
 
     app_env: str = "development"
+    app_timezone: str = "Europe/Madrid"
     database_url: str = f"sqlite:///{DATA_DIR / 'ainvestor.db'}"
     trading_mode: Literal["paper", "testnet", "live"] = "paper"
     paper_initial_balance: float = 100.0
@@ -54,6 +55,14 @@ class Settings(BaseSettings):
     telegram_chat_id: str = ""
 
     live_max_capital_eur: float = 100.0
+    live_max_crypto_eur: float = 50.0
+    live_max_stocks_eur: float = 50.0
+    live_max_derivatives_eur: float = 25.0
+    stock_trading_mode: Literal["paper", "ibkr_paper", "ibkr_live"] = "paper"
+
+    ibkr_host: str = "127.0.0.1"
+    ibkr_port: int = 7497
+    ibkr_client_id: int = 1
 
     risk_config_path: Path = Field(default=CONFIG_DIR / "risk.yaml")
 

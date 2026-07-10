@@ -1,5 +1,8 @@
 FROM python:3.12-slim
 
+ENV TZ=Europe/Madrid
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
