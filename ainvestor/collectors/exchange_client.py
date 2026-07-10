@@ -12,6 +12,9 @@ from ainvestor.config import get_settings
 
 logger = logging.getLogger(__name__)
 
+# Binance.com blocks US cloud IPs (e.g. GCP us-east1); spot price fallbacks keep same pair symbols.
+PRICE_FALLBACK_EXCHANGES = ("binanceus", "coinbase", "kraken")
+
 
 class ExchangeClient:
     """Unified exchange client via ccxt."""
@@ -21,6 +24,36 @@ class ExchangeClient:
         self.exchange_id = exchange_id or settings.default_exchange
         self.testnet = testnet
         self._exchange: ccxt.Exchange | None = None
+        self._fallback_exchanges: dict[str, ccxt.Exchange] = {}
+
+    def _get_fallback_exchange(self, exchange_id: str) -> ccxt.Exchange:
+        if exchange_id not in self._fallback_exchanges:
+            exchange_class = getattr(ccxt, exchange_id)
+            self._fallback_exchanges[exchange_id] = exchange_class(
+                {"enableRateLimit": True, "options": {"defaultType": "spot"}}
+            )
+        return self._fallback_exchanges[exchange_id]
+
+    async def _fetch_with_fallback(self, op: str, symbol: str, fetcher):
+        try:
+            return await fetcher(self.exchange)
+        except Exception as primary_err:
+            if self.exchange_id != "binance":
+                raise primary_err
+            for fb_id in PRICE_FALLBACK_EXCHANGES:
+                try:
+                    fb = self._get_fallback_exchange(fb_id)
+                    result = await fetcher(fb)
+                    logger.info(
+                        "Using %s fallback for %s %s (binance blocked/unavailable)",
+                        fb_id,
+                        op,
+                        symbol,
+                    )
+                    return result
+                except Exception as fb_err:
+                    logger.debug("Fallback %s %s %s: %s", fb_id, op, symbol, fb_err)
+            raise primary_err
 
     def _build_exchange(self) -> ccxt.Exchange:
         settings = get_settings()
@@ -55,16 +88,26 @@ class ExchangeClient:
         return self._exchange
 
     async def fetch_ticker(self, symbol: str) -> dict[str, Any]:
-        return await asyncio.to_thread(self.exchange.fetch_ticker, symbol)
+        return await self._fetch_with_fallback(
+            "ticker",
+            symbol,
+            lambda ex: asyncio.to_thread(ex.fetch_ticker, symbol),
+        )
 
     async def fetch_tickers(self, symbols: list[str]) -> dict[str, Any]:
-        return await asyncio.to_thread(self.exchange.fetch_tickers, symbols)
+        return await self._fetch_with_fallback(
+            "tickers",
+            ",".join(symbols[:3]),
+            lambda ex: asyncio.to_thread(ex.fetch_tickers, symbols),
+        )
 
     async def fetch_ohlcv(
         self, symbol: str, timeframe: str = "1h", limit: int = 100
     ) -> list[list]:
-        return await asyncio.to_thread(
-            self.exchange.fetch_ohlcv, symbol, timeframe, None, limit
+        return await self._fetch_with_fallback(
+            "ohlcv",
+            symbol,
+            lambda ex: asyncio.to_thread(ex.fetch_ohlcv, symbol, timeframe, None, limit),
         )
 
     async def fetch_order_book(self, symbol: str, limit: int = 10) -> dict[str, Any]:

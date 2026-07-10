@@ -27,7 +27,7 @@ if (Test-Path "$LocalPath\.env") {
 }
 
 Write-Host "==> Ejecutando setup..."
-ssh @sshArgs "${SshUser}@${VmIp}" "cd $RemotePath && chmod +x deploy/gcp/setup.sh && bash deploy/gcp/setup.sh"
+ssh @sshArgs "${SshUser}@${VmIp}" "cd $RemotePath && sed -i 's/\r$//' deploy/gcp/setup.sh deploy/gcp/startup-script.sh 2>/dev/null; chmod +x deploy/gcp/setup.sh && bash deploy/gcp/setup.sh"
 
 Write-Host ""
 Write-Host "============================================"
