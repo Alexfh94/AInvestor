@@ -5,6 +5,8 @@ import json
 import logging
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from pathlib import Path
 
 from ainvestor.config import get_settings
@@ -18,6 +20,12 @@ from ainvestor.models.schemas import (
 )
 
 logger = logging.getLogger(__name__)
+_SDK_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cursor-sdk")
+
+
+def _format_error(exc: BaseException) -> str:
+    msg = str(exc).strip()
+    return msg or f"{type(exc).__name__}: {exc!r}"
 
 
 def find_cursor_agent_cli() -> Path | None:
@@ -271,16 +279,16 @@ class AIAgent:
             try:
                 return await self._run_cursor_sdk(prompt)
             except Exception as e:
-                logger.warning("Cursor SDK failed: %s", e)
-                errors.append(f"SDK: {e}")
+                logger.warning("Cursor SDK failed: %s", _format_error(e), exc_info=True)
+                errors.append(f"SDK: {_format_error(e)}")
 
         agent_cli = find_cursor_agent_cli()
         if agent_cli:
             try:
                 return await self._run_cursor_cli(prompt, agent_cli)
             except Exception as e:
-                logger.warning("Cursor CLI failed: %s", e)
-                errors.append(f"CLI: {e}")
+                logger.warning("Cursor CLI failed: %s", _format_error(e), exc_info=True)
+                errors.append(f"CLI: {_format_error(e)}")
 
         if self.settings.ai_fallback_enabled and self.settings.openai_api_key:
             return await self._run_openai_fallback(prompt)
@@ -319,51 +327,20 @@ class AIAgent:
     async def _run_cursor_sdk(
         self, prompt: str
     ) -> tuple[CycleDecision, str, str | None, AIUsage]:
-        from cursor_sdk import AgentOptions, LocalAgentOptions, SendOptions
-        from cursor_sdk.asyncio import AsyncAgent, AsyncClient
-
-        mcp_servers = {
-            "ainvestor-tools": {
-                "command": "python",
-                "args": ["-m", "ainvestor.mcp_server"],
-                "env": {"DATABASE_URL": self.settings.database_url},
-            }
-        }
-
-        options = AgentOptions(
-            model=self.settings.ai_model,
-            api_key=self.settings.cursor_api_key,
-            local=LocalAgentOptions(cwd=str(self._project_root)),
+        """Run Cursor SDK in a dedicated thread (uvicorn/Windows event-loop safe)."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            _SDK_EXECUTOR,
+            partial(
+                _run_cursor_sdk_blocking,
+                prompt,
+                self.settings.cursor_api_key,
+                self.settings.ai_model,
+                self.settings.database_url,
+                self._project_root,
+            ),
         )
 
-        client = await AsyncClient.launch_bridge(workspace=str(self._project_root))
-        try:
-            agent = await AsyncAgent.create(options, client=client)
-            try:
-                run = await agent.send(prompt, SendOptions(mcp_servers=mcp_servers))
-                result = await run.wait()
-                run_id = result.id if hasattr(result, "id") else None
-
-                raw_text = ""
-                if hasattr(result, "result") and result.result:
-                    raw_text = str(result.result)
-                else:
-                    async for msg in run.messages():
-                        if msg.type == "assistant":
-                            for block in msg.message.content:
-                                if block.type == "text":
-                                    raw_text += block.text
-
-                if result.status == "error":
-                    raise RuntimeError(f"Cursor agent run failed: {run_id}")
-
-                usage = _extract_usage_from_run(result, run)
-                decision = parse_trade_proposal(raw_text)
-                return decision, raw_text, run_id, usage
-            finally:
-                await agent.close()
-        finally:
-            await client.aclose()
 
     async def _run_openai_fallback(
         self, prompt: str
@@ -392,6 +369,72 @@ class AIAgent:
                 output_tokens=response.usage.completion_tokens or 0,
             )
         return decision, raw_text, response.id, usage
+
+
+def _run_cursor_sdk_blocking(
+    prompt: str,
+    api_key: str,
+    model: str,
+    database_url: str,
+    project_root: Path,
+) -> tuple[CycleDecision, str, str | None, AIUsage]:
+    return asyncio.run(
+        _cursor_sdk_async(prompt, api_key, model, database_url, project_root)
+    )
+
+
+async def _cursor_sdk_async(
+    prompt: str,
+    api_key: str,
+    model: str,
+    database_url: str,
+    project_root: Path,
+) -> tuple[CycleDecision, str, str | None, AIUsage]:
+    from cursor_sdk import AgentOptions, LocalAgentOptions, SendOptions
+    from cursor_sdk.asyncio import AsyncAgent, AsyncClient
+
+    mcp_servers = {
+        "ainvestor-tools": {
+            "command": "python",
+            "args": ["-m", "ainvestor.mcp_server"],
+            "env": {"DATABASE_URL": database_url},
+        }
+    }
+
+    options = AgentOptions(
+        model=model,
+        api_key=api_key,
+        local=LocalAgentOptions(cwd=str(project_root)),
+    )
+
+    client = await AsyncClient.launch_bridge(workspace=str(project_root))
+    try:
+        agent = await AsyncAgent.create(options, client=client)
+        try:
+            run = await agent.send(prompt, SendOptions(mcp_servers=mcp_servers))
+            result = await run.wait()
+            run_id = result.id if hasattr(result, "id") else None
+
+            raw_text = ""
+            if hasattr(result, "result") and result.result:
+                raw_text = str(result.result)
+            else:
+                async for msg in run.messages():
+                    if msg.type == "assistant":
+                        for block in msg.message.content:
+                            if block.type == "text":
+                                raw_text += block.text
+
+            if result.status == "error":
+                raise RuntimeError(f"Cursor agent run failed: {run_id}")
+
+            usage = _extract_usage_from_run(result, run)
+            decision = parse_trade_proposal(raw_text)
+            return decision, raw_text, run_id, usage
+        finally:
+            await agent.close()
+    finally:
+        await client.aclose()
 
 
 def _extract_usage_from_run(result, run) -> AIUsage:
