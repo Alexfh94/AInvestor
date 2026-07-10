@@ -67,6 +67,9 @@ class ExchangeClient:
             self.exchange.fetch_ohlcv, symbol, timeframe, None, limit
         )
 
+    async def fetch_order_book(self, symbol: str, limit: int = 10) -> dict[str, Any]:
+        return await asyncio.to_thread(self.exchange.fetch_order_book, symbol, limit)
+
     async def create_market_order(
         self, symbol: str, side: str, amount: float
     ) -> dict[str, Any]:
@@ -100,3 +103,19 @@ class ExchangeClient:
             logger.warning("Fee lookup failed for %s: %s — using fallback", symbol, e)
 
         return float(fallback)
+
+
+class FuturesExchangeClient(ExchangeClient):
+    """Binance USDT-M futures for funding/OI context (read-only)."""
+
+    def _build_exchange(self) -> ccxt.Exchange:
+        exchange_class = getattr(ccxt, self.exchange_id)
+        settings = get_settings()
+        config: dict[str, Any] = {
+            "enableRateLimit": True,
+            "options": {"defaultType": "swap"},
+        }
+        if self.exchange_id == "binance":
+            config["apiKey"] = settings.binance_api_key
+            config["secret"] = settings.binance_api_secret
+        return exchange_class(config)

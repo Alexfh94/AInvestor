@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 from datetime import datetime
 
+from ainvestor.utils.datetime_utils import app_now
+
 import httpx
+from sqlalchemy.orm import Session
 
 from ainvestor.config import get_settings, load_risk_config
+from ainvestor.db.models import SentimentRecord
 from ainvestor.models.schemas import SentimentData
 
 logger = logging.getLogger(__name__)
@@ -17,22 +22,35 @@ REDDIT_HOT_URL = "https://oauth.reddit.com/r/cryptocurrency/hot"
 
 
 class SentimentCollector:
-    """Collects fear/greed index and Reddit mentions."""
+    """Collects fear/greed index, Reddit mentions and persists to DB."""
 
-    def __init__(self):
+    def __init__(self, db: Session | None = None):
         self.settings = get_settings()
         self._pairs = load_risk_config()["whitelist"]["pairs"]
+        self.db = db
 
-    async def collect(self) -> SentimentData:
+    async def collect(self, btc_dominance: float | None = None, persist: bool = True) -> SentimentData:
         fear_greed = await self._fetch_fear_greed()
         reddit_mentions = await self._fetch_reddit_mentions()
 
-        return SentimentData(
+        data = SentimentData(
             fear_greed_index=fear_greed.get("value"),
             fear_greed_label=fear_greed.get("classification"),
             reddit_mentions=reddit_mentions,
-            timestamp=datetime.utcnow(),
+            timestamp=app_now(),
         )
+
+        if persist and self.db is not None:
+            record = SentimentRecord(
+                fear_greed_index=data.fear_greed_index,
+                fear_greed_label=data.fear_greed_label,
+                btc_dominance=btc_dominance,
+                reddit_mentions_json=json.dumps(reddit_mentions) if reddit_mentions else None,
+            )
+            self.db.add(record)
+            self.db.commit()
+
+        return data
 
     async def _fetch_fear_greed(self) -> dict:
         try:
@@ -107,12 +125,23 @@ class SentimentCollector:
             logger.warning("Reddit auth failed: %s", e)
             return None
 
-    def summarize(self, data: SentimentData) -> str:
+    def get_latest_from_db(self) -> SentimentRecord | None:
+        if self.db is None:
+            return None
+        return (
+            self.db.query(SentimentRecord)
+            .order_by(SentimentRecord.captured_at.desc())
+            .first()
+        )
+
+    def summarize(self, data: SentimentData, btc_dominance: float | None = None) -> str:
         lines = []
         if data.fear_greed_index is not None:
             lines.append(
                 f"Fear & Greed Index: {data.fear_greed_index} ({data.fear_greed_label})"
             )
+        if btc_dominance is not None:
+            lines.append(f"BTC dominance: {btc_dominance:.1f}%")
         if data.reddit_mentions:
             top = sorted(data.reddit_mentions.items(), key=lambda x: -x[1])[:5]
             lines.append("Reddit hot mentions: " + ", ".join(f"{k}({v})" for k, v in top))

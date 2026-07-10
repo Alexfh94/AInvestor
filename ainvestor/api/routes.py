@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
+
+from ainvestor.utils.datetime_utils import app_now_iso
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -17,7 +18,7 @@ router = APIRouter()
 
 @router.get("/health")
 async def health():
-    return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
+    return {"status": "ok", "timestamp": app_now_iso(), "timezone": "Europe/Madrid"}
 
 
 @router.get("/portfolio")
@@ -226,6 +227,87 @@ async def dex_status():
 
     dex = DexConnector()
     return {"enabled": dex.is_enabled, "phase": "8-future"}
+
+
+@router.get("/market/context")
+async def get_market_context(db: Session = Depends(get_db)):
+    """Latest market context from last cycle or live collection."""
+    from ainvestor.cycle_runner import get_last_market_context
+    from ainvestor.collectors.macro import MacroCollector
+    from ainvestor.collectors.derivatives_store import DerivativesCollector
+    from ainvestor.collectors.sentiment import SentimentCollector
+    from ainvestor.collectors.news import NewsCollector
+    from ainvestor.services.market_hours import market_status_label
+
+    cached = get_last_market_context()
+    if cached:
+        return cached
+
+    macro = await MacroCollector().collect()
+    deriv = await DerivativesCollector(db).collect_and_persist()
+    sentiment = await SentimentCollector(db).collect(btc_dominance=macro.btc_dominance)
+    news = await NewsCollector(db).collect()
+
+    return {
+        "macro": macro.model_dump(mode="json"),
+        "derivatives": [d.model_dump(mode="json") for d in deriv],
+        "sentiment": sentiment.model_dump(mode="json"),
+        "news": [n.model_dump(mode="json") for n in news[:10]],
+        "market_status": market_status_label(),
+        "captured_at": app_now_iso(),
+    }
+
+
+@router.get("/portfolio/unified")
+async def get_unified_portfolio(db: Session = Depends(get_db)):
+    from ainvestor.collectors.market import MarketCollector
+    from ainvestor.collectors.stocks import StockCollector
+    from ainvestor.portfolio.unified import UnifiedPortfolioManager
+
+    crypto_collector = MarketCollector(db)
+    prices: dict[str, float] = {}
+    for symbol in crypto_collector.pairs:
+        try:
+            ticker = await crypto_collector.client.fetch_ticker(symbol)
+            prices[symbol] = ticker.get("last") or ticker.get("close", 0)
+        except Exception:
+            pass
+
+    stock_tickers = await StockCollector().collect_all()
+    stock_prices = {t.symbol: t.last for t in stock_tickers}
+
+    unified = await UnifiedPortfolioManager(db).get_snapshot(prices, stock_prices)
+    return unified.model_dump()
+
+
+@router.get("/ibkr/status")
+async def ibkr_status():
+    from ainvestor.brokers.ibkr import IBKRBroker
+
+    broker = IBKRBroker()
+    return {
+        "enabled": broker.enabled,
+        "connected": broker._connected,
+        "host": broker.risk.get("host"),
+        "port": broker.risk.get("port"),
+        "paper": broker.risk.get("paper", True),
+    }
+
+
+@router.post("/ibkr/sync")
+async def ibkr_sync(db: Session = Depends(get_db)):
+    from ainvestor.brokers.ibkr import IBKRBroker
+
+    broker = IBKRBroker()
+    if not await broker.connect():
+        raise HTTPException(503, "IBKR not available")
+    try:
+        count = await broker.sync_positions_to_db(db)
+        positions = await broker.get_positions()
+        summary = await broker.get_account_summary()
+        return {"synced": count, "positions": positions, "account": summary}
+    finally:
+        await broker.disconnect()
 
 
 @router.get("/config")

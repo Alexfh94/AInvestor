@@ -4,6 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Literal
 
+from ainvestor.utils.datetime_utils import app_now
 from pydantic import BaseModel, Field
 
 
@@ -31,6 +32,18 @@ class DecisionAction(str, Enum):
     SELL = "sell"
 
 
+class InstrumentType(str, Enum):
+    SPOT = "spot"
+    PERPETUAL = "perpetual"
+    STOCK = "stock"
+
+
+class AssetClass(str, Enum):
+    CRYPTO = "crypto"
+    STOCK = "stock"
+    DERIVATIVE = "derivative"
+
+
 class TradeProposal(BaseModel):
     """AI proposal - must pass RiskManager before execution."""
 
@@ -41,6 +54,10 @@ class TradeProposal(BaseModel):
     take_profit_pct: float = Field(ge=0, le=100)
     conviction: int = Field(ge=0, le=100, default=50)
     reasoning: str = ""
+    instrument_type: InstrumentType = InstrumentType.SPOT
+    position_side: Literal["long", "short"] = "long"
+    leverage: int = Field(default=1, ge=1, le=20)
+    asset_class: AssetClass = AssetClass.CRYPTO
 
 
 class CycleDecision(BaseModel):
@@ -49,6 +66,7 @@ class CycleDecision(BaseModel):
     proposals: list[TradeProposal] = Field(default_factory=list)
     summary: str = ""
     hold: bool = False
+    allocation: dict[str, float] = Field(default_factory=dict)
 
 
 class AIUsage(BaseModel):
@@ -84,6 +102,10 @@ class PositionSnapshot(BaseModel):
     unrealized_pnl: float
     stop_loss: float | None = None
     take_profit: float | None = None
+    instrument_type: str = "spot"
+    position_side: str = "long"
+    leverage: int = 1
+    asset_class: str = "crypto"
 
 
 class PortfolioSnapshot(BaseModel):
@@ -106,6 +128,11 @@ class TechnicalSignal(BaseModel):
     macd: float | None = None
     macd_signal: float | None = None
     volume_ratio: float | None = None
+    atr: float | None = None
+    atr_pct: float | None = None
+    trend_1h: Literal["bullish", "bearish", "neutral"] = "neutral"
+    trend_4h: Literal["bullish", "bearish", "neutral"] | None = None
+    trend_1d: Literal["bullish", "bearish", "neutral"] | None = None
     conviction_score: int = Field(ge=0, le=100, default=50)
     trend: Literal["bullish", "bearish", "neutral"] = "neutral"
 
@@ -123,7 +150,36 @@ class MarketTicker(BaseModel):
     ask: float | None = None
     volume: float | None = None
     change_pct: float | None = None
+    spread_pct: float | None = None
     timestamp: datetime
+
+
+class DerivativesSnapshot(BaseModel):
+    symbol: str
+    funding_rate: float
+    funding_rate_pct: float
+    mark_price: float
+    open_interest: float
+    timestamp: datetime
+
+
+class MacroContext(BaseModel):
+    btc_dominance: float | None = None
+    total_market_cap_usd: float | None = None
+    market_cap_change_24h_pct: float | None = None
+    timestamp: datetime = Field(default_factory=app_now)
+
+
+class UnifiedPortfolioSnapshot(BaseModel):
+    """Aggregated view across crypto, stocks and derivatives in EUR."""
+
+    total_equity_eur: float
+    crypto_value_eur: float
+    stock_value_eur: float
+    perp_margin_eur: float
+    cash_eur: float
+    mode: TradingMode
+    kill_switch_active: bool = False
 
 
 class NewsItem(BaseModel):
@@ -139,4 +195,4 @@ class SentimentData(BaseModel):
     fear_greed_index: int | None = None
     fear_greed_label: str | None = None
     reddit_mentions: dict[str, int] = Field(default_factory=dict)
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=app_now)

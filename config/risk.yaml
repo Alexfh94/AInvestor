@@ -1,28 +1,33 @@
 # Risk configuration - versioned and auditable
-version: "1.0"
+version: "2.0"
 
 position:
-  max_position_pct: 20.0              # Máx. base con convicción media (~50)
-  max_position_pct_high_conviction: 60.0  # Máx. con convicción alta (90+)
-  high_conviction_threshold: 70       # A partir de aquí escala el tamaño
+  max_position_pct: 20.0
+  max_position_pct_high_conviction: 60.0
+  high_conviction_threshold: 70
   max_open_positions: 5
-  min_order_value_usdt: 5.0           # Mínimo por orden (ajustado a cartera 100 USDT)
+  min_order_value_usdt: 5.0
 
 fees:
-  exchange: binance                     # Exchange de referencia para comisiones paper
-  fallback_taker_rate: 0.001            # 0.1% si no se puede leer del exchange
+  exchange: binance
+  fallback_taker_rate: 0.001
 
 stops:
   require_stop_loss: true
   require_take_profit: true
-  max_stop_loss_pct: 5.0        # Max distance for stop-loss from entry
+  max_stop_loss_pct: 5.0
   min_take_profit_pct: 1.0
+  use_atr_suggestions: true
 
 limits:
   max_daily_loss_pct: 3.0
   max_weekly_loss_pct: 8.0
   max_drawdown_pct: 20.0
   max_trades_per_day: 10
+
+ai_validation:
+  conviction_divergence_threshold: 30
+  min_conviction_on_divergence: 80
 
 whitelist:
   pairs:
@@ -37,6 +42,38 @@ whitelist:
     - LINK/USDT
     - DOT/USDT
 
+assets:
+  crypto:
+  - BTC/USDT
+  - ETH/USDT
+  - SOL/USDT
+  stocks:
+  - AAPL
+  - MSFT
+  - SPY
+
+derivatives:
+  enabled: true
+  paper_only: true
+  max_leverage: 2
+  max_open_perps: 2
+  funding_cost_warning_pct: 0.05
+  isolated_margin: true
+  mifid_retail_leverage_cap: 2
+
+stocks:
+  enabled: true
+  paper_only: true
+  max_position_pct: 15.0
+  max_open_positions: 3
+  min_order_value_eur: 10.0
+  market_hours_required: true
+
+allocation:
+  max_crypto_pct: 70.0
+  max_stocks_pct: 40.0
+  max_derivatives_pct: 20.0
+
 modes:
   paper:
     enabled: true
@@ -45,3 +82,20 @@ modes:
   live:
     enabled: false
     max_capital_eur: 100.0
+    gradual_activation:
+      crypto_spot: false
+      crypto_perps: false
+      stocks: false
+    caps_per_class_eur:
+      crypto: 50.0
+      stocks: 50.0
+      derivatives: 25.0
+    kill_switch_global: true
+    mifid_leverage_cap: 2
+
+ibkr:
+  enabled: false
+  host: "127.0.0.1"
+  port: 7497
+  client_id: 1
+  paper: true

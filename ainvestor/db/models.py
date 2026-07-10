@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from ainvestor.utils.datetime_utils import app_now
 from sqlalchemy import (
     Boolean,
     DateTime,
@@ -29,9 +30,9 @@ class Portfolio(Base):
     quote_currency: Mapped[str] = mapped_column(String(10), default="USDT")
     realized_pnl: Mapped[float] = mapped_column(Float, default=0.0)
     kill_switch_active: Mapped[bool] = mapped_column(Boolean, default=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=app_now)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, default=app_now, onupdate=app_now
     )
 
 
@@ -45,7 +46,12 @@ class Position(Base):
     entry_price: Mapped[float] = mapped_column(Float)
     stop_loss: Mapped[float | None] = mapped_column(Float, nullable=True)
     take_profit: Mapped[float | None] = mapped_column(Float, nullable=True)
-    opened_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    instrument_type: Mapped[str] = mapped_column(String(20), default="spot")
+    position_side: Mapped[str] = mapped_column(String(10), default="long")
+    leverage: Mapped[int] = mapped_column(Integer, default=1)
+    margin_used: Mapped[float | None] = mapped_column(Float, nullable=True)
+    asset_class: Mapped[str] = mapped_column(String(20), default="crypto")
+    opened_at: Mapped[datetime] = mapped_column(DateTime, default=app_now)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     is_open: Mapped[bool] = mapped_column(Boolean, default=True)
 
@@ -63,9 +69,13 @@ class Trade(Base):
     fee: Mapped[float] = mapped_column(Float, default=0.0)
     status: Mapped[str] = mapped_column(String(20), default="executed")
     mode: Mapped[str] = mapped_column(String(20), default="paper")
+    instrument_type: Mapped[str] = mapped_column(String(20), default="spot")
+    position_side: Mapped[str] = mapped_column(String(10), default="long")
+    leverage: Mapped[int] = mapped_column(Integer, default=1)
+    asset_class: Mapped[str] = mapped_column(String(20), default="crypto")
     exchange_order_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     cycle_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
-    executed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    executed_at: Mapped[datetime] = mapped_column(DateTime, default=app_now)
 
 
 class AIDecision(Base):
@@ -87,7 +97,7 @@ class AIDecision(Base):
     tokens_cache_read: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tokens_cache_write: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tokens_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=app_now)
 
 
 class DecisionOutcome(Base):
@@ -109,7 +119,7 @@ class DecisionOutcome(Base):
     outcome: Mapped[str] = mapped_column(String(20), default="pending", index=True)
     outcome_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     trade_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=app_now)
     evaluated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
@@ -124,7 +134,7 @@ class MarketSnapshot(Base):
     volume_24h: Mapped[float | None] = mapped_column(Float, nullable=True)
     change_pct_24h: Mapped[float | None] = mapped_column(Float, nullable=True)
     ohlcv_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    captured_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    captured_at: Mapped[datetime] = mapped_column(DateTime, default=app_now, index=True)
 
 
 class PortfolioValueHistory(Base):
@@ -135,7 +145,7 @@ class PortfolioValueHistory(Base):
     total_value_usdt: Mapped[float] = mapped_column(Float)
     quote_balance: Mapped[float] = mapped_column(Float)
     invested_usdt: Mapped[float] = mapped_column(Float, default=0.0)
-    captured_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    captured_at: Mapped[datetime] = mapped_column(DateTime, default=app_now, index=True)
 
 
 class RiskEvent(Base):
@@ -146,7 +156,7 @@ class RiskEvent(Base):
     symbol: Mapped[str | None] = mapped_column(String(20), nullable=True)
     details: Mapped[str | None] = mapped_column(Text, nullable=True)
     cycle_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=app_now)
 
 
 class CycleRun(Base):
@@ -155,9 +165,75 @@ class CycleRun(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     cycle_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     status: Mapped[str] = mapped_column(String(20), default="running")
-    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=app_now)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class NewsRecord(Base):
+    __tablename__ = "news_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    title: Mapped[str] = mapped_column(String(500))
+    url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    source: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    currencies: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    sentiment: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    captured_at: Mapped[datetime] = mapped_column(DateTime, default=app_now, index=True)
+
+
+class SentimentRecord(Base):
+    __tablename__ = "sentiment_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    fear_greed_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fear_greed_label: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    btc_dominance: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reddit_mentions_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    captured_at: Mapped[datetime] = mapped_column(DateTime, default=app_now, index=True)
+
+
+class DerivativesRecord(Base):
+    __tablename__ = "derivatives_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(20), index=True)
+    funding_rate: Mapped[float] = mapped_column(Float)
+    funding_rate_pct: Mapped[float] = mapped_column(Float)
+    mark_price: Mapped[float] = mapped_column(Float)
+    open_interest: Mapped[float] = mapped_column(Float)
+    captured_at: Mapped[datetime] = mapped_column(DateTime, default=app_now, index=True)
+
+
+class StockPortfolio(Base):
+    __tablename__ = "stock_portfolios"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    mode: Mapped[str] = mapped_column(String(20), default="paper")
+    cash_eur: Mapped[float] = mapped_column(Float, default=0.0)
+    cash_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    realized_pnl_eur: Mapped[float] = mapped_column(Float, default=0.0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=app_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=app_now, onupdate=app_now
+    )
+
+
+class StockPosition(Base):
+    __tablename__ = "stock_positions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    portfolio_id: Mapped[int] = mapped_column(Integer, index=True)
+    symbol: Mapped[str] = mapped_column(String(20), index=True)
+    shares: Mapped[float] = mapped_column(Float)
+    entry_price: Mapped[float] = mapped_column(Float)
+    currency: Mapped[str] = mapped_column(String(10), default="USD")
+    stop_loss: Mapped[float | None] = mapped_column(Float, nullable=True)
+    take_profit: Mapped[float | None] = mapped_column(Float, nullable=True)
+    opened_at: Mapped[datetime] = mapped_column(DateTime, default=app_now)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    is_open: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
 _settings = get_settings()
@@ -179,7 +255,9 @@ def _migrate_db() -> None:
     from sqlalchemy import inspect, text
 
     inspector = inspect(engine)
-    if "ai_decisions" in inspector.get_table_names():
+    table_names = inspector.get_table_names()
+
+    if "ai_decisions" in table_names:
         cols = {c["name"] for c in inspector.get_columns("ai_decisions")}
         with engine.begin() as conn:
             if "summary" not in cols:
@@ -195,6 +273,33 @@ def _migrate_db() -> None:
             ):
                 if col not in cols:
                     conn.execute(text(f"ALTER TABLE ai_decisions ADD COLUMN {col} INTEGER"))
+
+    for table, new_cols in (
+        ("positions", {
+            "instrument_type": "VARCHAR(20) DEFAULT 'spot'",
+            "position_side": "VARCHAR(10) DEFAULT 'long'",
+            "leverage": "INTEGER DEFAULT 1",
+            "margin_used": "FLOAT",
+            "asset_class": "VARCHAR(20) DEFAULT 'crypto'",
+        }),
+        ("trades", {
+            "instrument_type": "VARCHAR(20) DEFAULT 'spot'",
+            "position_side": "VARCHAR(10) DEFAULT 'long'",
+            "leverage": "INTEGER DEFAULT 1",
+            "asset_class": "VARCHAR(20) DEFAULT 'crypto'",
+        }),
+        ("decision_outcomes", {
+            "instrument_type": "VARCHAR(20) DEFAULT 'spot'",
+        }),
+    ):
+        if table not in table_names:
+            continue
+        cols = {c["name"] for c in inspector.get_columns(table)}
+        with engine.begin() as conn:
+            for col, col_type in new_cols.items():
+                if col not in cols:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"))
+
     _backfill_decision_summaries()
 
 

@@ -4,6 +4,8 @@ import logging
 import uuid
 from datetime import datetime
 
+from ainvestor.utils.datetime_utils import app_now
+
 from sqlalchemy.orm import Session
 
 from ainvestor.config import get_settings
@@ -104,7 +106,7 @@ class PaperTradingSimulator:
         position.amount -= amount_base
         if position.amount <= 1e-10:
             position.is_open = False
-            position.closed_at = datetime.utcnow()
+            position.closed_at = app_now()
 
         trade = Trade(
             portfolio_id=self.portfolio.id,
@@ -206,6 +208,10 @@ class PortfolioManager:
                     unrealized_pnl=unrealized,
                     stop_loss=pos.stop_loss,
                     take_profit=pos.take_profit,
+                    instrument_type=getattr(pos, "instrument_type", "spot"),
+                    position_side=getattr(pos, "position_side", "long"),
+                    leverage=getattr(pos, "leverage", 1),
+                    asset_class=getattr(pos, "asset_class", "crypto"),
                 )
             )
 

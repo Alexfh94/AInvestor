@@ -143,6 +143,28 @@
         </div>
     </div>
 
+    <div class="grid grid-2" style="margin-bottom: 1.5rem;">
+        <div class="card">
+            <h2>Contexto de mercado</h2>
+            <div id="market-context"><p class="muted">Cargando…</p></div>
+        </div>
+        <div class="card">
+            <h2>Señales técnicas</h2>
+            <div id="market-signals"><p class="muted">Cargando…</p></div>
+        </div>
+    </div>
+
+    <div class="grid grid-2" style="margin-bottom: 1.5rem;">
+        <div class="card">
+            <h2>Derivados (funding / OI)</h2>
+            <div id="derivatives-panel"><p class="muted">Cargando…</p></div>
+        </div>
+        <div class="card">
+            <h2>Noticias y sentimiento</h2>
+            <div id="news-sentiment"><p class="muted">Cargando…</p></div>
+        </div>
+    </div>
+
     <div class="card" style="margin-bottom: 1.5rem;">
         <h2>Posiciones abiertas</h2>
         <div id="positions"><p class="muted">Cargando…</p></div>
@@ -212,6 +234,100 @@
             loadDecisions();
             loadLearning();
             loadTokenUsage();
+            loadMarketContext();
+            loadUnifiedPortfolio();
+        }
+
+        async function loadUnifiedPortfolio() {
+            try {
+                const r = await fetch('/api/portfolio/unified');
+                const data = await r.json();
+                const el = document.getElementById('metrics');
+                if (!el) return;
+                const extra = document.getElementById('unified-eur');
+                const html = `<div class="card"><h2>Equity unificada</h2><div class="metric">${fmt(data.total_equity_eur)} EUR</div><div class="muted" style="font-size:0.8rem">Crypto ${fmt(data.crypto_value_eur)} · Stocks ${fmt(data.stock_value_eur)} · Cash ${fmt(data.cash_eur)}</div></div>`;
+                if (!extra) {
+                    const div = document.createElement('div');
+                    div.id = 'unified-eur';
+                    div.innerHTML = html;
+                    el.appendChild(div.firstElementChild);
+                } else {
+                    extra.innerHTML = html;
+                }
+            } catch (e) {}
+        }
+
+        async function loadMarketContext() {
+            try {
+                const r = await fetch('/api/market/context');
+                const data = await r.json();
+                renderMarketContext(data);
+                renderSignals(data.signals || []);
+                renderDerivatives(data.derivatives || []);
+                renderNewsSentiment(data);
+            } catch (e) { console.error(e); }
+        }
+
+        function renderMarketContext(data) {
+            const el = document.getElementById('market-context');
+            const macro = data.macro || {};
+            const lines = [
+                `<p><strong>${data.market_status || '—'}</strong></p>`,
+                macro.btc_dominance ? `<p>BTC dominance: <strong>${fmt(macro.btc_dominance, 1)}%</strong></p>` : '',
+                macro.market_cap_change_24h_pct != null ? `<p>Mcap 24h: <span class="${macro.market_cap_change_24h_pct >= 0 ? 'positive' : 'negative'}">${macro.market_cap_change_24h_pct >= 0 ? '+' : ''}${fmt(macro.market_cap_change_24h_pct, 2)}%</span></p>` : '',
+            ];
+            if (data.tickers && data.tickers.length) {
+                lines.push('<table><thead><tr><th>Par</th><th>Precio</th><th>24h</th><th>Spread</th></tr></thead><tbody>');
+                data.tickers.slice(0, 8).forEach(t => {
+                    const chg = t.change_pct != null ? `${t.change_pct >= 0 ? '+' : ''}${fmt(t.change_pct, 2)}%` : '—';
+                    lines.push(`<tr><td>${t.symbol}</td><td>${fmt(t.last, 4)}</td><td class="${(t.change_pct||0) >= 0 ? 'positive' : 'negative'}">${chg}</td><td>${t.spread_pct != null ? fmt(t.spread_pct, 3) + '%' : '—'}</td></tr>`);
+                });
+                lines.push('</tbody></table>');
+            } else {
+                lines.push('<p class="muted">Ejecuta un ciclo IA para ver tickers actualizados.</p>');
+            }
+            el.innerHTML = lines.join('');
+        }
+
+        function renderSignals(signals) {
+            const el = document.getElementById('market-signals');
+            if (!signals.length) { el.innerHTML = '<p class="muted">Sin señales — ejecuta un ciclo</p>'; return; }
+            el.innerHTML = `<table><thead><tr><th>Par</th><th>Tendencia</th><th>Conv.</th><th>RSI</th><th>ATR%</th><th>MTF</th></tr></thead><tbody>` +
+                signals.map(s => {
+                    const mtf = [s.trend_4h ? `4h:${s.trend_4h}` : '', s.trend_1d ? `1d:${s.trend_1d}` : ''].filter(Boolean).join(' ');
+                    const trendCls = s.trend === 'bullish' ? 'positive' : s.trend === 'bearish' ? 'negative' : 'muted';
+                    return `<tr><td>${s.symbol}</td><td class="${trendCls}">${s.trend}</td><td>${s.conviction_score}</td><td>${s.rsi ?? '—'}</td><td>${s.atr_pct ?? '—'}</td><td class="muted" style="font-size:0.8rem">${mtf || '—'}</td></tr>`;
+                }).join('') + '</tbody></table>';
+        }
+
+        function renderDerivatives(derivatives) {
+            const el = document.getElementById('derivatives-panel');
+            if (!derivatives.length) { el.innerHTML = '<p class="muted">Sin datos de derivados</p>'; return; }
+            el.innerHTML = `<table><thead><tr><th>Par</th><th>Funding</th><th>OI</th><th>Mark</th></tr></thead><tbody>` +
+                derivatives.slice(0, 10).map(d => {
+                    const cls = d.funding_rate_pct > 0 ? 'negative' : 'positive';
+                    return `<tr><td>${d.symbol}</td><td class="${cls}">${d.funding_rate_pct >= 0 ? '+' : ''}${fmt(d.funding_rate_pct, 4)}%</td><td>${Number(d.open_interest).toLocaleString('es-ES')}</td><td>${fmt(d.mark_price, 2)}</td></tr>`;
+                }).join('') + '</tbody></table>';
+        }
+
+        function renderNewsSentiment(data) {
+            const el = document.getElementById('news-sentiment');
+            const sent = data.sentiment || {};
+            let html = '';
+            if (sent.fear_greed_index != null) {
+                html += `<p>Fear & Greed: <strong>${sent.fear_greed_index}</strong> (${sent.fear_greed_label || '—'})</p>`;
+            }
+            const news = data.news || [];
+            if (news.length) {
+                html += '<ul style="margin-top:0.5rem;padding-left:1.2rem;font-size:0.85rem">';
+                news.slice(0, 6).forEach(n => {
+                    html += `<li>${n.title}${n.sentiment ? ` <span class="badge neutral">${n.sentiment}</span>` : ''}</li>`;
+                });
+                html += '</ul>';
+            } else {
+                html += '<p class="muted">Sin noticias recientes</p>';
+            }
+            el.innerHTML = html;
         }
 
         async function loadPortfolio() {

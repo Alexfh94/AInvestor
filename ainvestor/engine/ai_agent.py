@@ -8,31 +8,33 @@ import re
 from pathlib import Path
 
 from ainvestor.config import get_settings
-from ainvestor.models.schemas import AIUsage, CycleDecision, DecisionAction, TradeProposal
+from ainvestor.models.schemas import (
+    AIUsage,
+    AssetClass,
+    CycleDecision,
+    DecisionAction,
+    InstrumentType,
+    TradeProposal,
+)
 
 logger = logging.getLogger(__name__)
 
 
 def find_cursor_agent_cli() -> Path | None:
     """Locate cursor-agent CLI installed by Cursor IDE (uses IDE login session)."""
-    base = (
-        Path(os.environ.get("APPDATA", ""))
-        / "cursor"
-        / "User"
-        / "globalStorage"
-        / "anysphere.cursor-agent-worker"
-        / "agent-cli"
-        / ".local"
-        / "share"
-        / "cursor-agent"
-        / "versions"
-    )
-    if not base.is_dir():
-        return None
-    for version_dir in sorted(base.iterdir(), reverse=True):
-        cmd = version_dir / "cursor-agent.cmd"
-        if cmd.is_file():
-            return cmd
+    appdata = Path(os.environ.get("APPDATA", ""))
+    bases = [
+        appdata / "Cursor" / "User" / "globalStorage" / "anysphere.cursor-agent-worker",
+        appdata / "cursor" / "User" / "globalStorage" / "anysphere.cursor-agent-worker",
+    ]
+    for base in bases:
+        versions = base / "agent-cli" / ".local" / "share" / "cursor-agent" / "versions"
+        if not versions.is_dir():
+            continue
+        for version_dir in sorted(versions.iterdir(), reverse=True):
+            cmd = version_dir / "cursor-agent.cmd"
+            if cmd.is_file():
+                return cmd
     return None
 
 
@@ -70,50 +72,64 @@ def _extract_cursor_cli_response(stdout: str) -> str:
     return _parse_cursor_cli_stdout(stdout)[0]
 
 
-CYCLE_PROMPT_TEMPLATE = """You are AInvestor, a crypto trading analysis agent.
+CYCLE_PROMPT_TEMPLATE = """You are AInvestor, a multi-asset trading analysis agent (crypto spot, perpetuals, stocks).
 
-Analyze the following market context and propose trades OR recommend HOLD.
+Analyze the context in layers: MACRO → SECTOR → PAIR/ASSET → EXECUTION.
 
-## Portfolio
+## Layer 1 — Macro context
+{macro_summary}
+
+## Layer 2 — Portfolio
 {portfolio_summary}
 
-## Market Summary
+## Layer 3 — Market (crypto + stocks)
 {market_summary}
 
-## Technical Signals
+## Layer 4 — Derivatives (funding / OI)
+{derivatives_summary}
+
+## Layer 5 — Technical signals (multi-timeframe + ATR)
 {signals_summary}
 
-## News
+## Layer 6 — News (filtered)
 {news_summary}
 
-## Sentiment
+## Layer 7 — Sentiment
 {sentiment_summary}
 
-## Historical Learning
+## Layer 8 — Historical learning
 {learning_summary}
 
-## Risk Rules
-- Position sizing scales with conviction (amount_pct = % of available USDT):
-  - conviction 50: max ~{max_position_mid:.0f}% of portfolio
+## Risk rules
+- Position sizing scales with conviction (amount_pct = % of available balance):
+  - conviction 50: max ~{max_position_mid:.0f}%
   - conviction 70: max ~{max_position_base:.0f}%
   - conviction 90+: max ~{max_position_high:.0f}%
-- Use higher amount_pct only when conviction justifies it
 - Taker fee: ~{fee_pct:.2f}% per trade on {exchange} (round-trip ~{fee_round_trip:.2f}%)
-- Take-profit must exceed round-trip fees to be profitable
-- Required stop-loss and take-profit on every buy
-- Whitelist pairs only: {whitelist}
-- Max {max_trades} trades per day
-- Min order: {min_order} USDT
+- Take-profit must exceed round-trip fees
+- Required stop-loss and take-profit on every buy/open
+- Crypto whitelist: {whitelist}
+- Stocks whitelist: {stocks_whitelist}
+- Max leverage perpetuals: {max_leverage}x (MiFID retail cap)
+- Max {max_trades} trades per day | Min order: {min_order} USDT
+- Perps: only short if funding favorable; no perp+spot same asset without hedge
+- Stocks: only when US market open ({market_status})
+{mcp_instruction}
 
 ## Instructions
-Return ONLY valid JSON in this exact format (no markdown):
+Return ONLY valid JSON (no markdown):
 {{
   "hold": false,
-  "summary": "Brief analysis",
+  "summary": "Brief layered analysis",
+  "allocation": {{"crypto": 60, "stocks": 30, "derivatives": 10}},
   "proposals": [
     {{
       "action": "buy|sell|hold",
       "symbol": "BTC/USDT",
+      "instrument_type": "spot|perpetual|stock",
+      "position_side": "long|short",
+      "leverage": 1,
+      "asset_class": "crypto|stock|derivative",
       "amount_pct": 5.0,
       "stop_loss_pct": 3.0,
       "take_profit_pct": 6.0,
@@ -124,7 +140,7 @@ Return ONLY valid JSON in this exact format (no markdown):
 }}
 
 If no action recommended, set "hold": true and "proposals": [].
-Use MCP tools to get additional data if needed before deciding.
+Spot buy = long only. Perpetual short uses action "sell" with position_side "short".
 """
 
 
@@ -136,6 +152,10 @@ def build_cycle_prompt(
     sentiment_summary: str,
     risk_config: dict,
     learning_summary: str = "",
+    macro_summary: str = "",
+    derivatives_summary: str = "",
+    market_status: str = "",
+    use_mcp: bool = False,
 ) -> str:
     from ainvestor.engine.risk import max_position_pct_for_conviction
 
@@ -143,10 +163,20 @@ def build_cycle_prompt(
     fees = risk_config.get("fees", {})
     fee_rate = float(fees.get("fallback_taker_rate", 0.001))
     exchange = fees.get("exchange", "binance")
+    deriv = risk_config.get("derivatives", {})
+    stocks = risk_config.get("assets", {}).get("stocks", [])
+
+    mcp_instruction = (
+        "- Use MCP tools to get additional data if needed before deciding."
+        if use_mcp
+        else "- MCP tools not available in this session; use only the context above."
+    )
 
     return CYCLE_PROMPT_TEMPLATE.format(
+        macro_summary=macro_summary or "No macro data.",
         portfolio_summary=portfolio_summary,
         market_summary=market_summary,
+        derivatives_summary=derivatives_summary or "No derivatives data.",
         signals_summary=signals_summary,
         news_summary=news_summary,
         sentiment_summary=sentiment_summary,
@@ -159,7 +189,11 @@ def build_cycle_prompt(
         exchange=exchange,
         min_order=pos["min_order_value_usdt"],
         whitelist=", ".join(risk_config["whitelist"]["pairs"]),
+        stocks_whitelist=", ".join(stocks) if stocks else "none",
+        max_leverage=deriv.get("max_leverage", 2),
         max_trades=risk_config["limits"]["max_trades_per_day"],
+        market_status=market_status or "unknown",
+        mcp_instruction=mcp_instruction,
     )
 
 
@@ -187,6 +221,10 @@ def parse_trade_proposal(text: str) -> CycleDecision:
             action_str = p.get("action", "hold").lower()
             if action_str == "hold":
                 continue
+            inst = p.get("instrument_type", "spot").lower()
+            ac = p.get("asset_class")
+            if not ac:
+                ac = "stock" if inst == "stock" else "derivative" if inst == "perpetual" else "crypto"
             proposals.append(
                 TradeProposal(
                     action=DecisionAction(action_str),
@@ -196,15 +234,22 @@ def parse_trade_proposal(text: str) -> CycleDecision:
                     take_profit_pct=float(p.get("take_profit_pct", 0)),
                     conviction=int(p.get("conviction", 50)),
                     reasoning=p.get("reasoning", ""),
+                    instrument_type=InstrumentType(inst),
+                    position_side=p.get("position_side", "long"),
+                    leverage=int(p.get("leverage", 1)),
+                    asset_class=AssetClass(ac),
                 )
             )
         except (ValueError, KeyError) as e:
             logger.warning("Skipping invalid proposal: %s", e)
 
+    allocation = data.get("allocation") or {}
+
     return CycleDecision(
         proposals=proposals,
         summary=data.get("summary", ""),
         hold=data.get("hold", False) or len(proposals) == 0,
+        allocation=allocation,
     )
 
 
@@ -274,44 +319,51 @@ class AIAgent:
     async def _run_cursor_sdk(
         self, prompt: str
     ) -> tuple[CycleDecision, str, str | None, AIUsage]:
-        from cursor_sdk import Agent, LocalAgentOptions
+        from cursor_sdk import AgentOptions, LocalAgentOptions, SendOptions
+        from cursor_sdk.asyncio import AsyncAgent, AsyncClient
 
-        mcp_servers = [
-            {
-                "name": "ainvestor-tools",
+        mcp_servers = {
+            "ainvestor-tools": {
                 "command": "python",
                 "args": ["-m", "ainvestor.mcp_server"],
                 "env": {"DATABASE_URL": self.settings.database_url},
             }
-        ]
-
-        create_kwargs: dict = {
-            "model": self.settings.ai_model,
-            "api_key": self.settings.cursor_api_key,
-            "local": LocalAgentOptions(cwd=str(self._project_root)),
-            "mcp_servers": mcp_servers,
         }
 
-        with Agent.create(**create_kwargs) as agent:
-            run = agent.send(prompt)
-            result = run.wait()
-            run_id = result.id if hasattr(result, "id") else None
+        options = AgentOptions(
+            model=self.settings.ai_model,
+            api_key=self.settings.cursor_api_key,
+            local=LocalAgentOptions(cwd=str(self._project_root)),
+        )
 
-            raw_text = ""
-            if hasattr(result, "result") and result.result:
-                raw_text = str(result.result)
-            else:
-                for msg in run.messages():
-                    if msg.type == "assistant":
-                        for block in msg.message.content:
-                            if block.type == "text":
-                                raw_text += block.text
+        client = await AsyncClient.launch_bridge(workspace=str(self._project_root))
+        try:
+            agent = await AsyncAgent.create(options, client=client)
+            try:
+                run = await agent.send(prompt, SendOptions(mcp_servers=mcp_servers))
+                result = await run.wait()
+                run_id = result.id if hasattr(result, "id") else None
 
-            if result.status == "error":
-                raise RuntimeError(f"Cursor agent run failed: {run_id}")
+                raw_text = ""
+                if hasattr(result, "result") and result.result:
+                    raw_text = str(result.result)
+                else:
+                    async for msg in run.messages():
+                        if msg.type == "assistant":
+                            for block in msg.message.content:
+                                if block.type == "text":
+                                    raw_text += block.text
 
-            decision = parse_trade_proposal(raw_text)
-            return decision, raw_text, run_id, AIUsage()
+                if result.status == "error":
+                    raise RuntimeError(f"Cursor agent run failed: {run_id}")
+
+                usage = _extract_usage_from_run(result, run)
+                decision = parse_trade_proposal(raw_text)
+                return decision, raw_text, run_id, usage
+            finally:
+                await agent.close()
+        finally:
+            await client.aclose()
 
     async def _run_openai_fallback(
         self, prompt: str
@@ -340,3 +392,30 @@ class AIAgent:
                 output_tokens=response.usage.completion_tokens or 0,
             )
         return decision, raw_text, response.id, usage
+
+
+def _extract_usage_from_run(result, run) -> AIUsage:
+    """Extract token usage from Cursor async SDK RunResult."""
+    usage = AIUsage()
+    raw_usage = None
+    if hasattr(result, "usage") and result.usage:
+        raw_usage = result.usage
+    elif hasattr(run, "usage") and run.usage:
+        raw_usage = run.usage
+
+    if raw_usage:
+        if isinstance(raw_usage, dict):
+            usage = AIUsage(
+                input_tokens=int(raw_usage.get("inputTokens") or raw_usage.get("input_tokens") or 0),
+                output_tokens=int(raw_usage.get("outputTokens") or raw_usage.get("output_tokens") or 0),
+                cache_read_tokens=int(raw_usage.get("cacheReadTokens") or raw_usage.get("cache_read_tokens") or 0),
+                cache_write_tokens=int(raw_usage.get("cacheWriteTokens") or raw_usage.get("cache_write_tokens") or 0),
+            )
+        else:
+            usage = AIUsage(
+                input_tokens=int(getattr(raw_usage, "input_tokens", 0) or getattr(raw_usage, "inputTokens", 0) or 0),
+                output_tokens=int(getattr(raw_usage, "output_tokens", 0) or getattr(raw_usage, "outputTokens", 0) or 0),
+                cache_read_tokens=int(getattr(raw_usage, "cache_read_tokens", 0) or getattr(raw_usage, "cacheReadTokens", 0) or 0),
+                cache_write_tokens=int(getattr(raw_usage, "cache_write_tokens", 0) or getattr(raw_usage, "cacheWriteTokens", 0) or 0),
+            )
+    return usage

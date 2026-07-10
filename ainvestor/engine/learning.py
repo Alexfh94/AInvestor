@@ -4,6 +4,8 @@ import json
 import logging
 from datetime import datetime, timedelta
 
+from ainvestor.utils.datetime_utils import app_now
+
 from sqlalchemy.orm import Session
 
 from ainvestor.config import get_settings
@@ -82,7 +84,7 @@ class DecisionLearning:
 
     def evaluate_pending(self, prices: dict[str, float]) -> int:
         """Evalúa decisiones pendientes tras la ventana configurada."""
-        cutoff = datetime.utcnow() - timedelta(hours=self.settings.decision_eval_hours)
+        cutoff = app_now() - timedelta(hours=self.settings.decision_eval_hours)
         pending = (
             self.db.query(DecisionOutcome)
             .filter(
@@ -109,7 +111,7 @@ class DecisionLearning:
             record.outcome_notes = notes
             record.return_pct = return_pct
             record.price_at_evaluation = eval_price
-            record.evaluated_at = datetime.utcnow()
+            record.evaluated_at = app_now()
             evaluated += 1
 
         if evaluated:

@@ -5,6 +5,8 @@ import logging
 from datetime import datetime
 from typing import Any
 
+from ainvestor.utils.datetime_utils import app_now_iso
+
 from mcp.server.fastmcp import FastMCP
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -187,7 +189,7 @@ def propose_trade(
         "take_profit_pct": take_profit_pct,
         "conviction": conviction,
         "reasoning": reasoning,
-        "proposed_at": datetime.utcnow().isoformat(),
+        "proposed_at": app_now_iso(),
         "note": "This is a proposal only. Execution requires RiskManager approval.",
     }
     return json.dumps(proposal)

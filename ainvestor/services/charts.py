@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+from ainvestor.utils.datetime_utils import app_now, app_now_iso
+
 from sqlalchemy.orm import Session
 
 from ainvestor.config import get_settings
@@ -34,7 +36,7 @@ async def record_portfolio_value_async(
             total_value_usdt=snapshot.total_value_usdt,
             quote_balance=snapshot.quote_balance,
             invested_usdt=snapshot.invested_usdt,
-            captured_at=datetime.utcnow(),
+            captured_at=app_now(),
         )
     )
     db.commit()
@@ -49,7 +51,7 @@ async def build_performance_chart(
     settings = get_settings()
     mgr = PortfolioManager(db)
     portfolio = mgr.get_or_create_portfolio()
-    since = datetime.utcnow() - timedelta(hours=hours)
+    since = app_now() - timedelta(hours=hours)
 
     trades = (
         db.query(Trade)
@@ -121,7 +123,7 @@ async def _portfolio_chart(
             pass
 
     snapshot = await mgr.get_snapshot(prices)
-    now = datetime.utcnow().isoformat()
+    now = app_now_iso()
     if not series or series[-1]["t"] != now:
         series.append({"t": now, "value": snapshot.total_value_usdt})
 
@@ -176,7 +178,7 @@ async def _asset_chart(
         try:
             ticker = await client.fetch_ticker(symbol)
             price = ticker.get("last") or ticker.get("close", 0)
-            series.append({"t": datetime.utcnow().isoformat(), "value": price, "performance_pct": 0})
+            series.append({"t": app_now_iso(), "value": price, "performance_pct": 0})
         except Exception:
             pass
 
