@@ -1,0 +1,47 @@
+# Risk configuration - versioned and auditable
+version: "1.0"
+
+position:
+  max_position_pct: 20.0              # Máx. base con convicción media (~50)
+  max_position_pct_high_conviction: 60.0  # Máx. con convicción alta (90+)
+  high_conviction_threshold: 70       # A partir de aquí escala el tamaño
+  max_open_positions: 5
+  min_order_value_usdt: 5.0           # Mínimo por orden (ajustado a cartera 100 USDT)
+
+fees:
+  exchange: binance                     # Exchange de referencia para comisiones paper
+  fallback_taker_rate: 0.001            # 0.1% si no se puede leer del exchange
+
+stops:
+  require_stop_loss: true
+  require_take_profit: true
+  max_stop_loss_pct: 5.0        # Max distance for stop-loss from entry
+  min_take_profit_pct: 1.0
+
+limits:
+  max_daily_loss_pct: 3.0
+  max_weekly_loss_pct: 8.0
+  max_drawdown_pct: 20.0
+  max_trades_per_day: 10
+
+whitelist:
+  pairs:
+    - BTC/USDT
+    - ETH/USDT
+    - SOL/USDT
+    - BNB/USDT
+    - XRP/USDT
+    - ADA/USDT
+    - DOGE/USDT
+    - AVAX/USDT
+    - LINK/USDT
+    - DOT/USDT
+
+modes:
+  paper:
+    enabled: true
+  testnet:
+    enabled: false
+  live:
+    enabled: false
+    max_capital_eur: 100.0
