@@ -104,6 +104,7 @@
             vertical-align: middle;
         }
         .profile-badge.aggressive { background: #422006; color: #fcd34d; }
+        .profile-badge.extreme { background: #450a0a; color: #fca5a5; }
         .panel { display: none; }
         .panel.active { display: block; }
         .chart-wrap { position: relative; height: 380px; margin-bottom: 1rem; }
@@ -206,13 +207,8 @@
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 </head>
 <body>
-    <h1>AInvestor <span id="profile-badge" class="profile-badge">Conservadora</span></h1>
-    <p class="subtitle">Trading crypto asistido por IA — modo paper · comparativa A/B</p>
-
-    <div class="tabs profile-tabs">
-        <button class="tab active" data-profile="conservative" onclick="switchProfile('conservative')">Conservadora</button>
-        <button class="tab" data-profile="aggressive" onclick="switchProfile('aggressive')">Agresiva</button>
-    </div>
+    <h1>AInvestor <span id="profile-badge" class="profile-badge extreme">Extrema</span></h1>
+    <p class="subtitle">Trading crypto asistido por IA — modo paper · cartera extrema all-in</p>
 
     <div class="tabs">
         <button class="tab active" data-panel="dashboard" onclick="switchTab('dashboard')">Dashboard</button>
@@ -337,9 +333,9 @@
         };
         let perfChart = null;
         let chartRefreshTimer = null;
-        let selectedProfile = 'conservative';
+        let selectedProfile = 'extreme';
         let loadingDepth = 0;
-        const PROFILE_LABELS = { conservative: 'Conservadora', aggressive: 'Agresiva' };
+        const PROFILE_LABELS = { extreme: 'Extrema' };
 
         function tableScroll(html) {
             return `<div class="table-scroll">${html}</div>`;
@@ -363,14 +359,11 @@
         }
 
         async function switchProfile(profile) {
-            selectedProfile = profile;
-            document.querySelectorAll('.profile-tabs .tab').forEach(t =>
-                t.classList.toggle('active', t.dataset.profile === profile)
-            );
+            selectedProfile = profile || 'extreme';
             const badge = document.getElementById('profile-badge');
-            badge.textContent = PROFILE_LABELS[profile] || profile;
-            badge.className = 'profile-badge' + (profile === 'aggressive' ? ' aggressive' : '');
-            setLoading(true, `Cargando cartera ${PROFILE_LABELS[profile]}…`);
+            badge.textContent = PROFILE_LABELS[selectedProfile] || selectedProfile;
+            badge.className = 'profile-badge extreme';
+            setLoading(true, `Cargando cartera ${PROFILE_LABELS[selectedProfile]}…`);
             try {
                 await refreshAll();
                 if (document.getElementById('panel-charts').classList.contains('active')) {
@@ -426,14 +419,45 @@
         }
 
         async function refreshAll() {
-            await Promise.all([
-                loadPortfolio(),
-                loadTrades(),
-                loadDecisions(),
-                loadLearning(),
-                loadTokenUsage(),
-                loadMarketContext(),
-            ]);
+            try {
+                const r = await fetch(`/api/dashboard?${profileQuery()}`);
+                const data = await r.json();
+                if (data.portfolio) {
+                    renderMetrics(data.portfolio);
+                    renderAllocations(data.portfolio);
+                    renderDistribution(data.portfolio);
+                    renderPositions(data.portfolio);
+                }
+                if (data.trades) renderTrades(data.trades);
+                if (data.decisions) renderDecisions(data.decisions);
+                if (data.learning) renderLearning(data.learning);
+                if (data.token_usage) {
+                    const el = document.getElementById('token-usage-bar');
+                    if (el) {
+                        const u = data.token_usage;
+                        el.innerHTML = `<span class="token-pill">IA: ${u.cycles} ciclos · `
+                            + `${(u.total_tokens || 0).toLocaleString('es-ES')} tokens `
+                            + `(in: ${(u.total_input_tokens || 0).toLocaleString('es-ES')}, `
+                            + `out: ${(u.total_output_tokens || 0).toLocaleString('es-ES')})</span>`;
+                    }
+                }
+                if (data.market_context) {
+                    renderMarketContext(data.market_context);
+                    renderSignals(data.market_context.signals || []);
+                    renderDerivatives(data.market_context.derivatives || []);
+                    renderNewsSentiment(data.market_context);
+                }
+            } catch (e) {
+                console.error(e);
+                await Promise.all([
+                    loadPortfolio(),
+                    loadTrades(),
+                    loadDecisions(),
+                    loadLearning(),
+                    loadTokenUsage(),
+                    loadMarketContext(),
+                ]);
+            }
         }
 
         async function loadMarketContext() {
@@ -599,8 +623,8 @@
         function renderChart(data) {
             const ctx = document.getElementById('perf-chart').getContext('2d');
             const lineData = data.series.map(p => ({ x: p.t, y: p.value }));
-            const buyMarkers = data.markers.filter(m => m.side === 'buy').map(m => ({ x: m.t, y: m.price }));
-            const sellMarkers = data.markers.filter(m => m.side === 'sell').map(m => ({ x: m.t, y: m.price }));
+            const openMarkers = data.markers.filter(m => m.trade_action === 'open').map(m => ({ x: m.t, y: m.price }));
+            const closeMarkers = data.markers.filter(m => m.trade_action === 'close').map(m => ({ x: m.t, y: m.price }));
 
             if (perfChart) perfChart.destroy();
 
@@ -619,8 +643,8 @@
                             yAxisID: 'y',
                         },
                         {
-                            label: 'Compras',
-                            data: buyMarkers,
+                            label: 'Aperturas',
+                            data: openMarkers,
                             type: 'scatter',
                             pointStyle: 'triangle',
                             pointRadius: 9,
@@ -630,8 +654,8 @@
                             yAxisID: 'y',
                         },
                         {
-                            label: 'Ventas',
-                            data: sellMarkers,
+                            label: 'Cierres',
+                            data: closeMarkers,
                             type: 'scatter',
                             pointStyle: 'triangle',
                             pointRadius: 9,
@@ -688,6 +712,26 @@
             `;
         }
 
+        function instrumentBadge(p) {
+            const inst = p.instrument_type || 'spot';
+            if (inst === 'perpetual') {
+                const side = (p.position_side || 'long').toUpperCase();
+                const lev = p.leverage || 1;
+                return `<span class="badge paper">PERP ${lev}x ${side}</span>`;
+            }
+            return '<span class="badge hold">SPOT</span>';
+        }
+
+        function tradeInstrumentBadge(t) {
+            const inst = t.instrument_type || 'spot';
+            if (inst === 'perpetual') {
+                const side = (t.position_side || (t.side === 'sell' ? 'short' : 'long')).toUpperCase();
+                const lev = t.leverage || 1;
+                return `<span class="badge paper">PERP ${lev}x ${side}</span>`;
+            }
+            return '<span class="badge hold">SPOT</span>';
+        }
+
         function renderAllocations(data) {
             const el = document.getElementById('allocations');
             if (!data.positions || !data.positions.length) {
@@ -697,7 +741,7 @@
             el.innerHTML = data.positions.map(p => `
                 <div class="alloc-row">
                     <div class="alloc-header">
-                        <span><strong>${p.asset}</strong> <span class="muted">(${p.symbol})</span></span>
+                        <span><strong>${p.asset}</strong> <span class="muted">(${p.symbol})</span> ${instrumentBadge(p)}</span>
                         <span>${fmt(p.value_usdt)} USDT · ${fmt(p.pct_of_portfolio, 1)}%</span>
                     </div>
                     <div class="muted" style="font-size:0.8rem">${fmt(p.amount, 6)} ${p.asset} @ ${fmt(p.entry_price, 4)}</div>
@@ -730,10 +774,15 @@
                 return;
             }
             el.innerHTML = tableScroll(`<table><thead><tr>
-                <th>Activo</th><th>Par</th><th>Cantidad</th><th>Valor USDT</th><th>% cartera</th><th>Entrada</th><th>Actual</th><th>P&L</th>
+                <th>Activo</th><th>Par</th><th>Tipo</th><th>Side</th><th>Lev</th><th>Margen</th><th>ROE %</th><th>Cantidad</th><th>Valor</th><th>% cartera</th><th>Entrada</th><th>Actual</th><th>P&L</th>
             </tr></thead><tbody>` + data.positions.map(p => `<tr>
                 <td><strong>${p.asset}</strong></td>
                 <td>${p.symbol}</td>
+                <td>${(p.instrument_type || 'spot') === 'perpetual' ? 'PERP' : 'SPOT'}</td>
+                <td>${(p.position_side || 'long').toUpperCase()}</td>
+                <td>${p.leverage || 1}x</td>
+                <td>${p.margin_used != null ? fmt(p.margin_used) : '—'}</td>
+                <td class="${(p.roe_pct || 0) >= 0 ? 'positive' : 'negative'}">${p.roe_pct != null ? (p.roe_pct >= 0 ? '+' : '') + fmt(p.roe_pct, 1) + '%' : '—'}</td>
                 <td>${fmt(p.amount, 6)}</td>
                 <td>${fmt(p.value_usdt)}</td>
                 <td>${fmt(p.pct_of_portfolio, 1)}%</td>
@@ -746,14 +795,30 @@
         function renderTrades(trades) {
             const el = document.getElementById('trades-table');
             if (!trades.length) { el.innerHTML = '<p class="muted">Sin operaciones</p>'; return; }
-            el.innerHTML = tableScroll(`<table><thead><tr><th>Par</th><th>Lado</th><th>Cantidad</th><th>Valor</th><th>Fecha</th></tr></thead><tbody>` +
-                trades.map(t => `<tr>
+            el.innerHTML = tableScroll(`<table><thead><tr><th>Par</th><th>Operación</th><th>Lev</th><th>Margen</th><th>PnL %</th><th>Neto</th><th>Comisión</th><th>Fecha</th></tr></thead><tbody>` +
+                trades.map(t => {
+                    const op = t.operation_label || (t.trade_action === 'close' ? 'Cerrar' : 'Abrir');
+                    const opCls = t.trade_action === 'close'
+                        ? ((t.realized_pnl_usdt || 0) >= 0 ? 'positive' : 'negative')
+                        : 'muted';
+                    const pnlPct = t.pnl_pct_roe != null
+                        ? `<span class="${t.pnl_pct_roe >= 0 ? 'positive' : 'negative'}">${t.pnl_pct_roe >= 0 ? '+' : ''}${fmt(t.pnl_pct_roe, 2)}%</span>`
+                        : '—';
+                    const net = t.realized_pnl_usdt != null
+                        ? `<span class="${t.realized_pnl_usdt >= 0 ? 'positive' : 'negative'}">${t.realized_pnl_usdt >= 0 ? '+' : ''}${fmt(t.realized_pnl_usdt)} USDT</span>`
+                        : '—';
+                    const margin = t.margin_used != null ? `${fmt(t.margin_used)} USDT` : '—';
+                    return `<tr>
                     <td>${t.symbol}</td>
-                    <td class="${t.side === 'buy' ? 'positive' : 'negative'}">${t.side.toUpperCase()}</td>
-                    <td>${fmt(t.amount, 6)}</td>
-                    <td>${fmt(t.value_usdt)} USDT</td>
+                    <td class="${opCls}"><strong>${op}</strong></td>
+                    <td>${t.leverage || 1}x</td>
+                    <td>${margin}</td>
+                    <td>${pnlPct}</td>
+                    <td>${net}</td>
+                    <td>${fmt(t.fee, 4)}</td>
                     <td>${fmtDate(t.executed_at)}</td>
-                </tr>`).join('') + '</tbody></table>');
+                </tr>`;
+                }).join('') + '</tbody></table>');
         }
 
         function outcomeBadge(outcome) {
@@ -773,9 +838,15 @@
                 const tokens = tu.total_tokens
                     ? `${tu.total_tokens.toLocaleString('es-ES')} <span class="muted">(${tu.input_tokens}/${tu.output_tokens})</span>`
                     : '<span class="muted">—</span>';
-                const evals = (d.outcomes || []).map(o =>
-                    `${o.symbol || '—'} ${outcomeBadge(o.outcome)}${o.return_pct != null ? ' ' + (o.return_pct >= 0 ? '+' : '') + fmt(o.return_pct, 1) + '%' : ''}`
-                ).join('<br>') || '<span class="muted">Pendiente</span>';
+                const evals = (d.outcomes || []).map(o => {
+                    let label = o.symbol || '—';
+                    if (o.instrument_type === 'perpetual' && o.action !== 'hold') {
+                        label += ` ${tradeInstrumentBadge(o)}`;
+                    } else if (o.action && o.action !== 'hold') {
+                        label += ` ${(o.action || '').toUpperCase()}`;
+                    }
+                    return `${label} ${outcomeBadge(o.outcome)}${o.return_pct != null ? ' ' + (o.return_pct >= 0 ? '+' : '') + fmt(o.return_pct, 1) + '%' : ''}`;
+                }).join('<br>') || '<span class="muted">Pendiente</span>';
                 return `<tr>
                     <td>${fmtDate(d.created_at)}</td>
                     <td>${tipo}</td>
@@ -790,8 +861,18 @@
         function renderLearning(data) {
             const el = document.getElementById('learning-panel');
             const s = data.stats || {};
-            const acc = s.accuracy_pct != null ? `${s.accuracy_pct}% acierto` : 'Sin evaluaciones aún';
-            let html = `<p style="margin-bottom:0.75rem"><strong>${acc}</strong> — ${s.evaluated || 0} evaluadas, ${s.pending_evaluation || 0} pendientes</p>`;
+            const evaluated = s.evaluated || 0;
+            let statsHtml = '<div style="display:flex;flex-wrap:wrap;gap:1rem;margin-bottom:0.75rem">';
+            if (evaluated > 0) {
+                statsHtml += `<span><strong class="outcome-good">${s.good || 0}</strong> correctas (${s.good_pct ?? 0}%)</span>`;
+                statsHtml += `<span><strong class="outcome-neutral">${s.neutral || 0}</strong> neutrales (${s.neutral_pct ?? 0}%)</span>`;
+                statsHtml += `<span><strong class="outcome-bad">${s.bad || 0}</strong> incorrectas (${s.bad_pct ?? 0}%)</span>`;
+                statsHtml += `<span class="muted">— ${evaluated} evaluadas de ${s.total_records || 0} total, ${s.pending_evaluation || 0} pendientes</span>`;
+            } else {
+                statsHtml += `<span class="muted">Sin evaluaciones aún (${s.pending_evaluation || 0} pendientes)</span>`;
+            }
+            statsHtml += '</div>';
+            let html = statsHtml;
             html += `<pre style="white-space:pre-wrap;font-size:0.85rem;color:var(--muted);margin-bottom:1rem">${data.summary || ''}</pre>`;
             if (data.recent && data.recent.length) {
                 let tbl = '<table><thead><tr><th>Fecha</th><th>Acción</th><th>Activo</th><th>Estado</th><th>Resultado</th><th>Notas</th></tr></thead><tbody>';
@@ -811,8 +892,8 @@
 
         refreshAll();
 
-        setInterval(() => { loadPortfolio(); }, 30000);
-        setInterval(loadTrades, 30000);
+        setInterval(() => { loadPortfolio(); }, 120000);
+        setInterval(loadTrades, 120000);
         setInterval(loadDecisions, 60000);
         setInterval(loadLearning, 120000);
         setInterval(loadTokenUsage, 120000);

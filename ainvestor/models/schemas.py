@@ -106,11 +106,15 @@ class PositionSnapshot(BaseModel):
     position_side: str = "long"
     leverage: int = 1
     asset_class: str = "crypto"
+    margin_used: float | None = None
+    notional_usdt: float | None = None
+    roe_pct: float | None = None
+    liq_distance_pct: float | None = None
 
 
 class PortfolioSnapshot(BaseModel):
     mode: TradingMode
-    profile: str = "conservative"
+    profile: str = "extreme"
     portfolio_id: int = 0
     quote_balance: float
     total_value_usdt: float
@@ -135,6 +139,7 @@ class TechnicalSignal(BaseModel):
     trend_1h: Literal["bullish", "bearish", "neutral"] = "neutral"
     trend_4h: Literal["bullish", "bearish", "neutral"] | None = None
     trend_1d: Literal["bullish", "bearish", "neutral"] | None = None
+    session_change_pct: float | None = None
     conviction_score: int = Field(ge=0, le=100, default=50)
     trend: Literal["bullish", "bearish", "neutral"] = "neutral"
 
@@ -162,6 +167,7 @@ class DerivativesSnapshot(BaseModel):
     funding_rate_pct: float
     mark_price: float
     open_interest: float
+    next_funding_time: datetime | None = None
     timestamp: datetime
 
 

@@ -66,6 +66,16 @@ async def build_performance_chart(
             "t": format_app_datetime(t.executed_at),
             "symbol": t.symbol,
             "side": t.side,
+            "trade_action": getattr(t, "trade_action", None)
+            or (
+                "open"
+                if getattr(t, "instrument_type", "spot") == "perpetual"
+                and (
+                    (t.side == "buy" and getattr(t, "position_side", "long") == "long")
+                    or (t.side == "sell" and getattr(t, "position_side", "long") == "short")
+                )
+                else "close"
+            ),
             "price": t.price,
             "value_usdt": t.value_usdt,
             "amount": t.amount,
@@ -113,20 +123,14 @@ async def _portfolio_chart(
             for h in history
         ]
 
-    from ainvestor.collectors.market import MarketCollector
     from ainvestor.config import load_risk_config
+    from ainvestor.services.market_prices import get_open_position_symbols, resolve_prices
 
     risk = load_risk_config(profile=profile)
     whitelist = risk.get("whitelist", {}).get("pairs", [])
 
-    collector = MarketCollector(db)
-    prices: dict[str, float] = {}
-    for pair in whitelist or collector.pairs:
-        try:
-            ticker = await collector.client.fetch_ticker(pair)
-            prices[pair] = ticker.get("last") or ticker.get("close", 0)
-        except Exception:
-            pass
+    live_symbols = get_open_position_symbols(db, portfolio.id)
+    prices = await resolve_prices(db, symbols=whitelist or None, live_symbols=live_symbols)
 
     snapshot = await mgr.get_snapshot(prices)
     now = app_now_iso()
@@ -143,7 +147,7 @@ async def _portfolio_chart(
         "label": f"Valor cartera {label} (USDT)",
         "series": series,
         "markers": markers,
-        "symbols": list(whitelist or collector.pairs),
+        "symbols": list(whitelist or []),
         "summary": {
             "initial_usdt": initial,
             "current_usdt": current,

@@ -1,21 +1,39 @@
 # Risk configuration - versioned and auditable
-version: "3.0"
+# Extreme: all-in perpetuals, max leverage paper stress-test.
+version: "5.0"
 
 fees:
   exchange: binance
   fallback_taker_rate: 0.001
+  all_in_reserve_pct: 0.1
 
 stops:
   require_stop_loss: true
   require_take_profit: true
-  max_stop_loss_pct: 5.0
+  max_stop_loss_pct: 15.0
   min_take_profit_pct: 1.0
+  min_take_profit_pct_perp: 0.35
+  max_take_profit_pct_perp: 1.5
   use_atr_suggestions: true
 
+profit_optimization:
+  min_tp_fee_multiplier: 2.0
+  extreme_all_in_amount_pct: 100.0
+
+exit_rules:
+  take_profit_roe_pct: 12.0
+  stop_loss_roe_pct: -5.0
+  loss_exit_max_quant_conviction: 40
+  trailing_activate_roe_pct: 5.0
+  trailing_distance_roe_pct: 3.0
+  reentry_cooldown_cycles: 2
+  rotation_min_conviction_delta: 15
+  rotation_min_roe_cost_pct: 2.0
+
 allocation:
-  max_crypto_pct: 70.0
-  max_stocks_pct: 40.0
-  max_derivatives_pct: 20.0
+  max_crypto_pct: 100.0
+  max_stocks_pct: 0.0
+  max_derivatives_pct: 100.0
 
 modes:
   paper:
@@ -44,22 +62,25 @@ ibkr:
   paper: true
 
 profiles:
-  conservative:
+  extreme:
     initial_balance_usdt: 100.0
+    ai_cycle_interval_minutes: 15
     position:
-      max_position_pct: 20.0
-      max_position_pct_high_conviction: 60.0
-      high_conviction_threshold: 70
-      max_open_positions: 4
+      max_position_pct: 100.0
+      max_position_pct_high_conviction: 100.0
+      high_conviction_threshold: 40
+      max_open_positions: 1
       min_order_value_usdt: 5.0
     limits:
-      max_daily_loss_pct: 3.0
-      max_weekly_loss_pct: 8.0
-      max_drawdown_pct: 15.0
-      max_trades_per_day: 6
+      max_daily_loss_pct: 100.0
+      max_weekly_loss_pct: 100.0
+      max_drawdown_pct: 100.0
+      max_trades_per_day: 40
     ai_validation:
-      conviction_divergence_threshold: 30
-      min_conviction_on_divergence: 80
+      conviction_divergence_threshold: 60
+      min_conviction_on_divergence: 45
+      min_conviction: 60
+      min_quant_conviction_entry: 55
     whitelist:
       pairs:
         - BTC/USDT
@@ -75,49 +96,11 @@ profiles:
     derivatives:
       enabled: true
       paper_only: true
-      max_leverage: 1
+      max_leverage: 10
       max_open_perps: 1
-      funding_cost_warning_pct: 0.05
+      funding_cost_warning_pct: 0.20
       isolated_margin: true
-      mifid_retail_leverage_cap: 2
+      mifid_retail_leverage_cap: 10
     stocks:
       enabled: false
-    prompt_style: conservative
-
-  aggressive:
-    initial_balance_usdt: 100.0
-    position:
-      max_position_pct: 85.0
-      max_position_pct_high_conviction: 100.0
-      high_conviction_threshold: 45
-      max_open_positions: 6
-      min_order_value_usdt: 5.0
-    limits:
-      max_daily_loss_pct: 15.0
-      max_weekly_loss_pct: 25.0
-      max_drawdown_pct: 50.0
-      max_trades_per_day: 25
-    ai_validation:
-      conviction_divergence_threshold: 50
-      min_conviction_on_divergence: 55
-    whitelist:
-      pairs:
-        - SOL/USDT
-        - BNB/USDT
-        - XRP/USDT
-        - ADA/USDT
-        - DOGE/USDT
-        - AVAX/USDT
-        - LINK/USDT
-        - DOT/USDT
-    derivatives:
-      enabled: true
-      paper_only: true
-      max_leverage: 2
-      max_open_perps: 4
-      funding_cost_warning_pct: 0.12
-      isolated_margin: true
-      mifid_retail_leverage_cap: 2
-    stocks:
-      enabled: false
-    prompt_style: aggressive
+    prompt_style: extreme

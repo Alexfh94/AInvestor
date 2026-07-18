@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from ainvestor.config import load_risk_config
 from ainvestor.db.models import Portfolio, Position, Trade
 from ainvestor.models.schemas import TradeSide, TradeStatus, TradingMode
+from ainvestor.portfolio.perp_sizing import compute_all_in_perp_open
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,7 @@ class PerpPaperSimulator:
     def __init__(self, db: Session, portfolio: Portfolio):
         self.db = db
         self.portfolio = portfolio
-        profile = getattr(portfolio, "profile", None) or "conservative"
+        profile = getattr(portfolio, "profile", None) or "extreme"
         self.config = load_risk_config(profile=profile).get("derivatives", {})
 
     def open_position(
@@ -36,14 +37,32 @@ class PerpPaperSimulator:
         take_profit: float | None,
         cycle_id: str | None = None,
         fee_rate: float = 0.001,
+        margin_used: float | None = None,
+        opening_fee: float | None = None,
     ) -> Trade | None:
         leverage = min(leverage, int(self.config.get("max_leverage", 2)))
-        margin = notional_usdt / leverage
-        fee = notional_usdt * fee_rate
-        total_required = margin + fee
 
-        if self.portfolio.quote_balance < total_required:
-            logger.warning("Insufficient margin for perp %s", symbol)
+        if margin_used is not None and opening_fee is not None:
+            margin = margin_used
+            fee = opening_fee
+            total_required = margin + fee
+        else:
+            margin = notional_usdt / leverage
+            fee = notional_usdt * fee_rate
+            total_required = margin + fee
+            # Float-safe all-in: fee absorbs rounding so total never exceeds balance
+            balance = self.portfolio.quote_balance
+            if total_required > balance and (total_required - balance) <= 0.05:
+                fee = balance - margin
+                total_required = balance
+
+        if self.portfolio.quote_balance + 1e-9 < total_required:
+            logger.warning(
+                "Insufficient margin for perp %s (need %.6f, have %.6f)",
+                symbol,
+                total_required,
+                self.portfolio.quote_balance,
+            )
             return None
 
         amount_base = notional_usdt / price
@@ -61,6 +80,7 @@ class PerpPaperSimulator:
             leverage=leverage,
             margin_used=margin,
             asset_class="derivative",
+            last_funding_at=app_now(),
             is_open=True,
         )
         self.db.add(position)
@@ -81,6 +101,7 @@ class PerpPaperSimulator:
             leverage=leverage,
             asset_class="derivative",
             cycle_id=cycle_id,
+            trade_action="open",
         )
         self.db.add(trade)
         self.db.commit()
@@ -108,9 +129,11 @@ class PerpPaperSimulator:
             pnl = (position.entry_price - price) * close_amount
 
         margin_release = (position.margin_used or 0) * (close_pct / 100)
+        net_pnl = pnl - fee
         net = margin_release + pnl - fee
         self.portfolio.quote_balance += net
-        self.portfolio.realized_pnl += pnl - fee
+        self.portfolio.realized_pnl += net_pnl
+        pnl_pct_roe = (net_pnl / margin_release * 100) if margin_release > 0 else None
 
         position.amount -= close_amount
         if position.margin_used:
@@ -134,6 +157,9 @@ class PerpPaperSimulator:
             leverage=position.leverage,
             asset_class="derivative",
             cycle_id=cycle_id,
+            trade_action="close",
+            realized_pnl_usdt=round(net_pnl, 6),
+            pnl_pct_roe=round(pnl_pct_roe, 4) if pnl_pct_roe is not None else None,
         )
         self.db.add(trade)
         self.db.commit()
@@ -159,4 +185,6 @@ class PerpPaperSimulator:
         else:
             cost = -payment if funding_rate > 0 else payment
         self.portfolio.quote_balance -= cost
+        position.last_funding_at = app_now()
+        self.db.commit()
         return cost

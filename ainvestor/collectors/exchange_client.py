@@ -149,7 +149,7 @@ class ExchangeClient:
 
 
 class FuturesExchangeClient(ExchangeClient):
-    """Binance USDT-M futures for funding/OI context (read-only)."""
+    """Binance USDT-M futures via ccxt (read-only). Prefer DerivativesCollector for funding/OI fallbacks."""
 
     def _build_exchange(self) -> ccxt.Exchange:
         exchange_class = getattr(ccxt, self.exchange_id)

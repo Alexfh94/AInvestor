@@ -31,10 +31,19 @@ class QuantEngine:
         macd_line, macd_signal = self._calc_macd(df["close"])
         volume_ratio = self._volume_ratio(df["volume"])
         atr, atr_pct = self._calc_atr(df)
+        session_change = self._session_momentum(df)
 
         trend = self._determine_trend(rsi, ma_fast, ma_slow, macd_line, macd_signal)
         conviction = self._score_conviction(
-            rsi, ma_fast, ma_slow, macd_line, macd_signal, volume_ratio, atr_pct
+            rsi,
+            ma_fast,
+            ma_slow,
+            macd_line,
+            macd_signal,
+            volume_ratio,
+            atr_pct,
+            trend,
+            session_change,
         )
 
         return TechnicalSignal(
@@ -47,6 +56,7 @@ class QuantEngine:
             volume_ratio=round(float(volume_ratio), 2) if not np.isnan(volume_ratio) else None,
             atr=round(float(atr), 6) if atr and not np.isnan(atr) else None,
             atr_pct=round(float(atr_pct), 2) if atr_pct and not np.isnan(atr_pct) else None,
+            session_change_pct=round(session_change, 2) if session_change is not None else None,
             trend_1h=trend,
             conviction_score=conviction,
             trend=trend,
@@ -69,13 +79,15 @@ class QuantEngine:
                 tf_trend = self._determine_trend(rsi, ma_fast, ma_slow, macd_line, macd_signal)
                 setattr(signal, attr, tf_trend)
 
-        # Boost conviction when timeframes align
         trends = [t for t in [signal.trend_1h, signal.trend_4h, signal.trend_1d] if t]
-        if trends and all(t == trends[0] and t != "neutral" for t in trends):
-            signal.conviction_score = min(100, signal.conviction_score + 10)
-            signal.trend = trends[0]
+        non_neutral = [t for t in trends if t != "neutral"]
+        if len(non_neutral) >= 2 and all(t == non_neutral[0] for t in non_neutral):
+            signal.conviction_score = min(100, signal.conviction_score + 15)
+            signal.trend = non_neutral[0]
         elif signal.trend_4h and signal.trend_1h != signal.trend_4h:
-            signal.conviction_score = max(0, signal.conviction_score - 10)
+            signal.conviction_score = max(0, signal.conviction_score - 12)
+        if signal.trend_1d and signal.trend_1h != signal.trend_1d:
+            signal.conviction_score = max(0, signal.conviction_score - 8)
 
         return signal
 
@@ -91,8 +103,21 @@ class QuantEngine:
     def get_quant_conviction_map(self, signals: list[TechnicalSignal]) -> dict[str, int]:
         return {s.symbol: s.conviction_score for s in signals}
 
+    def signals_by_symbol(self, signals: list[TechnicalSignal]) -> dict[str, TechnicalSignal]:
+        return {s.symbol: s for s in signals}
+
     def _to_dataframe(self, ohlcv: list[list]) -> pd.DataFrame:
         return pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+
+    def _session_momentum(self, df: pd.DataFrame, lookback: int = 6) -> float | None:
+        """Cambio % de precio en las últimas velas 1h (sesión reciente)."""
+        if len(df) < lookback:
+            return None
+        start = float(df["close"].iloc[-lookback])
+        end = float(df["close"].iloc[-1])
+        if start <= 0:
+            return None
+        return (end - start) / start * 100
 
     def _calc_rsi(self, closes: pd.Series) -> float:
         delta = closes.diff()
@@ -171,6 +196,8 @@ class QuantEngine:
         macd_signal: float,
         volume_ratio: float,
         atr_pct: float | None = None,
+        trend: str = "neutral",
+        session_change: float | None = None,
     ) -> int:
         score = 50
 
@@ -181,7 +208,12 @@ class QuantEngine:
             score += 10
 
         if rsi < 30 or rsi > 70:
-            score += 10
+            score += 5
+
+        if trend == "bullish" and rsi > 75:
+            score -= 15
+        elif trend == "bearish" and rsi < 25:
+            score -= 15
 
         if volume_ratio > 1.5:
             score += 10
@@ -194,6 +226,16 @@ class QuantEngine:
             elif atr_pct < 2:
                 score += 5
 
+        if session_change is not None:
+            if trend == "bullish" and session_change > 0.5:
+                score += min(10, int(session_change * 2))
+            elif trend == "bearish" and session_change < -0.5:
+                score += min(10, int(abs(session_change) * 2))
+            elif trend == "bullish" and session_change < -1.0:
+                score -= 10
+            elif trend == "bearish" and session_change > 1.0:
+                score -= 10
+
         return max(0, min(100, int(score)))
 
     def summarize(self, signals: list[TechnicalSignal]) -> str:
@@ -204,6 +246,8 @@ class QuantEngine:
                 parts.append(f"RSI={s.rsi}")
             if s.atr_pct is not None:
                 parts.append(f"ATR%={s.atr_pct}")
+            if s.session_change_pct is not None:
+                parts.append(f"session={s.session_change_pct:+.1f}%")
             mtf = []
             if s.trend_4h:
                 mtf.append(f"4h={s.trend_4h}")
@@ -219,7 +263,8 @@ class QuantEngine:
     ) -> dict[str, float] | None:
         if signal.atr_pct is None:
             return None
+        tp = min(signal.atr_pct * atr_multiplier_tp, 1.5)
         return {
             "stop_loss_pct": round(signal.atr_pct * atr_multiplier_sl, 2),
-            "take_profit_pct": round(signal.atr_pct * atr_multiplier_tp, 2),
+            "take_profit_pct": round(tp, 2),
         }

@@ -165,6 +165,40 @@ def get_trade_history(limit: int = 20) -> str:
 
 
 @mcp.tool()
+def get_derivatives_context(symbols: str = "") -> str:
+    """Get funding rates, OI, mark price and basis for perpetuals."""
+    import asyncio
+
+    from ainvestor.collectors.derivatives import DerivativesCollector
+    from ainvestor.collectors.market import MarketCollector
+
+    db = _get_db()
+    try:
+        deriv = DerivativesCollector()
+        market = MarketCollector(db)
+        pairs = deriv._pairs
+        target = [s.strip() for s in symbols.split(",") if s.strip()] if symbols else pairs
+
+        async def fetch():
+            prices: dict[str, float] = {}
+            for symbol in target:
+                try:
+                    ticker = await market.client.fetch_ticker(symbol)
+                    prices[symbol] = ticker.get("last") or ticker.get("close", 0)
+                except Exception:
+                    pass
+            all_snaps = await deriv.collect()
+            snaps = [s for s in all_snaps if s.symbol in target]
+            summary = deriv.summarize(snaps, prices)
+            return summary, [s.model_dump(mode="json") for s in snaps]
+
+        summary, data = asyncio.get_event_loop().run_until_complete(fetch())
+        return json.dumps({"summary": summary, "data": data}, default=str)
+    finally:
+        db.close()
+
+
+@mcp.tool()
 def get_risk_rules() -> str:
     """Get active risk management rules."""
     return json.dumps(load_risk_config())

@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
-from ainvestor.config import get_settings
+from ainvestor.config import get_profile_ai_cycle_interval, get_settings
 from ainvestor.cycle_runner import CycleRunner
 from ainvestor.db.models import SessionLocal
 from ainvestor.portfolio.profiles import PROFILES
@@ -16,15 +15,14 @@ logger = logging.getLogger(__name__)
 _scheduler: AsyncIOScheduler | None = None
 
 
-async def _run_ai_cycle():
+async def _run_ai_cycle_for_profile(profile: str):
     db = SessionLocal()
     try:
-        for profile in PROFILES:
-            runner = CycleRunner(db, profile=profile)
-            result = await runner.run()
-            logger.info("AI cycle completed (%s): %s", profile, result)
+        runner = CycleRunner(db, profile=profile)
+        result = await runner.run()
+        logger.info("AI cycle completed (%s): %s", profile, result)
     except Exception as e:
-        logger.exception("AI cycle error: %s", e)
+        logger.exception("AI cycle error (%s): %s", profile, e)
     finally:
         db.close()
 
@@ -64,7 +62,7 @@ async def _run_market_collect():
         db.close()
 
 
-async def _run_learning_eval():
+async def _run_learning_eval_for_profile(profile: str):
     db = SessionLocal()
     try:
         from ainvestor.collectors.market import MarketCollector
@@ -79,14 +77,13 @@ async def _run_learning_eval():
             except Exception:
                 pass
 
-        for profile in PROFILES:
-            learning = DecisionLearning(db, profile=profile)
-            learning.backfill_from_decisions()
-            count = learning.evaluate_pending(prices)
-            if count:
-                logger.info("Learning evaluation (%s): %d outcomes updated", profile, count)
+        learning = DecisionLearning(db, profile=profile)
+        learning.backfill_from_decisions()
+        count = learning.evaluate_pending(prices)
+        if count:
+            logger.info("Learning evaluation (%s): %d outcomes updated", profile, count)
     except Exception as e:
-        logger.exception("Learning eval error: %s", e)
+        logger.exception("Learning eval error (%s): %s", profile, e)
     finally:
         db.close()
 
@@ -99,12 +96,25 @@ def start_scheduler() -> AsyncIOScheduler:
     settings = get_settings()
     _scheduler = AsyncIOScheduler()
 
-    _scheduler.add_job(
-        _run_ai_cycle,
-        IntervalTrigger(minutes=settings.ai_cycle_interval),
-        id="ai_cycle",
-        replace_existing=True,
-    )
+    ai_intervals: dict[str, int] = {}
+    for profile in PROFILES:
+        interval = get_profile_ai_cycle_interval(profile)
+        ai_intervals[profile] = interval
+        _scheduler.add_job(
+            _run_ai_cycle_for_profile,
+            IntervalTrigger(minutes=interval),
+            id=f"ai_cycle_{profile}",
+            kwargs={"profile": profile},
+            replace_existing=True,
+        )
+        _scheduler.add_job(
+            _run_learning_eval_for_profile,
+            IntervalTrigger(minutes=interval),
+            id=f"learning_eval_{profile}",
+            kwargs={"profile": profile},
+            replace_existing=True,
+        )
+
     _scheduler.add_job(
         _run_risk_monitor,
         IntervalTrigger(minutes=settings.risk_monitor_interval),
@@ -117,20 +127,13 @@ def start_scheduler() -> AsyncIOScheduler:
         id="market_collect",
         replace_existing=True,
     )
-    _scheduler.add_job(
-        _run_learning_eval,
-        IntervalTrigger(minutes=settings.ai_cycle_interval),
-        id="learning_eval",
-        replace_existing=True,
-    )
 
     _scheduler.start()
     logger.info(
-        "Scheduler started: AI=%dmin, Risk=%dmin, Market=%dmin, Learning=%dmin (dual profile)",
-        settings.ai_cycle_interval,
+        "Scheduler started: AI cycles=%s, Risk=%dmin, Market=%dmin",
+        ai_intervals,
         settings.risk_monitor_interval,
         settings.market_collect_interval,
-        settings.ai_cycle_interval,
     )
     return _scheduler
 

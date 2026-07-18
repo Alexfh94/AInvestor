@@ -16,7 +16,8 @@ from ainvestor.models.schemas import (
 )
 from ainvestor.portfolio.manager import PaperTradingSimulator, PortfolioManager
 from ainvestor.portfolio.perp_simulator import PerpPaperSimulator
-from ainvestor.portfolio.profiles import DEFAULT_PROFILE, normalize_profile
+from ainvestor.portfolio.perp_sizing import compute_all_in_perp_open
+from ainvestor.portfolio.profiles import DEFAULT_PROFILE, PROFILE_EXTREME, normalize_profile
 from ainvestor.portfolio.stock_simulator import StockPortfolioManager
 from ainvestor.services.market_hours import is_us_market_open
 
@@ -77,16 +78,50 @@ class TradeExecutor:
         client = ExchangeClient()
         fee_rate = await client.get_taker_fee_rate(proposal.symbol)
 
-        if proposal.action == DecisionAction.BUY:
-            notional = portfolio.quote_balance * (proposal.amount_pct / 100)
-            stop = price * (1 - proposal.stop_loss_pct / 100)
-            tp = price * (1 + proposal.take_profit_pct / 100)
+        margin: float | None = None
+        opening_fee: float | None = None
+        if self.profile == PROFILE_EXTREME:
+            reserve = float(
+                load_risk_config(profile=self.profile)
+                .get("fees", {})
+                .get("all_in_reserve_pct", 0.1)
+            )
+            margin, notional, opening_fee = compute_all_in_perp_open(
+                portfolio.quote_balance, proposal.leverage, fee_rate, fee_reserve_pct=reserve
+            )
+        else:
+            margin = portfolio.quote_balance * (proposal.amount_pct / 100)
+            notional = margin * proposal.leverage
+        close_pct = 100.0 if self.profile == PROFILE_EXTREME else proposal.amount_pct
+
+        def _stops_for_side() -> tuple[float, float]:
             if proposal.position_side == "short":
                 stop = price * (1 + proposal.stop_loss_pct / 100)
                 tp = price * (1 - proposal.take_profit_pct / 100)
+            else:
+                stop = price * (1 - proposal.stop_loss_pct / 100)
+                tp = price * (1 + proposal.take_profit_pct / 100)
+            return stop, tp
+
+        positions = self.portfolio_mgr.get_simulator().get_open_positions()
+        pos = next(
+            (
+                p
+                for p in positions
+                if p.symbol == proposal.symbol
+                and p.instrument_type == "perpetual"
+                and p.is_open
+            ),
+            None,
+        )
+
+        if proposal.action == DecisionAction.BUY and proposal.position_side == "long":
+            if pos is not None:
+                return False
+            stop, tp = _stops_for_side()
             trade = simulator.open_position(
                 proposal.symbol,
-                proposal.position_side,
+                "long",
                 notional,
                 price,
                 proposal.leverage,
@@ -94,24 +129,53 @@ class TradeExecutor:
                 tp,
                 cycle_id,
                 fee_rate,
+                margin_used=margin,
+                opening_fee=opening_fee,
             )
             if trade and funding_rate:
                 positions = self.portfolio_mgr.get_simulator().get_open_positions()
-                pos = next((p for p in positions if p.symbol == proposal.symbol and p.is_open), None)
-                if pos:
-                    simulator.apply_funding(pos, funding_rate)
+                new_pos = next(
+                    (p for p in positions if p.symbol == proposal.symbol and p.is_open),
+                    None,
+                )
+                if new_pos:
+                    simulator.apply_funding(new_pos, funding_rate)
             return trade is not None
 
-        if proposal.action == DecisionAction.SELL:
-            positions = self.portfolio_mgr.get_simulator().get_open_positions()
-            pos = next(
-                (p for p in positions if p.symbol == proposal.symbol and p.instrument_type == "perpetual"),
-                None,
-            )
+        if proposal.action == DecisionAction.SELL and proposal.position_side == "short":
             if pos is None:
-                return False
-            trade = simulator.close_position(pos, price, proposal.amount_pct, cycle_id, fee_rate)
+                stop, tp = _stops_for_side()
+                trade = simulator.open_position(
+                    proposal.symbol,
+                    "short",
+                    notional,
+                    price,
+                    proposal.leverage,
+                    stop,
+                    tp,
+                    cycle_id,
+                    fee_rate,
+                    margin_used=margin,
+                    opening_fee=opening_fee,
+                )
+                if trade and funding_rate:
+                    positions = self.portfolio_mgr.get_simulator().get_open_positions()
+                    new_pos = next(
+                        (p for p in positions if p.symbol == proposal.symbol and p.is_open),
+                        None,
+                    )
+                    if new_pos:
+                        simulator.apply_funding(new_pos, funding_rate)
+                return trade is not None
+
+        if proposal.action == DecisionAction.SELL and pos is not None:
+            trade = simulator.close_position(pos, price, close_pct, cycle_id, fee_rate)
             return trade is not None
+
+        if proposal.action == DecisionAction.BUY and pos is not None and proposal.position_side == "short":
+            trade = simulator.close_position(pos, price, close_pct, cycle_id, fee_rate)
+            return trade is not None
+
         return False
 
     async def _execute_stock(self, proposal: TradeProposal, price: float, cycle_id: str | None) -> bool:
@@ -180,7 +244,17 @@ class TradeExecutor:
     ) -> bool:
         simulator = self.portfolio_mgr.get_simulator()
         positions = simulator.get_open_positions()
-        position = next((p for p in positions if p.symbol == symbol), None)
+        position = next(
+            (
+                p
+                for p in positions
+                if p.symbol == symbol
+                and (getattr(p, "instrument_type", "spot") == "perpetual" or p.instrument_type == "spot")
+            ),
+            None,
+        )
+        if position is None:
+            position = next((p for p in positions if p.symbol == symbol), None)
         if position is None:
             return False
 

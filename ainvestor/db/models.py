@@ -26,7 +26,7 @@ class Portfolio(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     mode: Mapped[str] = mapped_column(String(20), default="paper")
-    profile: Mapped[str] = mapped_column(String(20), default="conservative", index=True)
+    profile: Mapped[str] = mapped_column(String(20), default="extreme", index=True)
     quote_balance: Mapped[float] = mapped_column(Float, default=100.0)
     quote_currency: Mapped[str] = mapped_column(String(10), default="USDT")
     initial_balance: Mapped[float] = mapped_column(Float, default=100.0)
@@ -53,6 +53,7 @@ class Position(Base):
     leverage: Mapped[int] = mapped_column(Integer, default=1)
     margin_used: Mapped[float | None] = mapped_column(Float, nullable=True)
     asset_class: Mapped[str] = mapped_column(String(20), default="crypto")
+    last_funding_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     opened_at: Mapped[datetime] = mapped_column(DateTime, default=app_now)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     is_open: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -77,6 +78,9 @@ class Trade(Base):
     asset_class: Mapped[str] = mapped_column(String(20), default="crypto")
     exchange_order_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     cycle_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    trade_action: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    realized_pnl_usdt: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pnl_pct_roe: Mapped[float | None] = mapped_column(Float, nullable=True)
     executed_at: Mapped[datetime] = mapped_column(DateTime, default=app_now)
 
 
@@ -85,7 +89,7 @@ class AIDecision(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     cycle_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
-    profile: Mapped[str] = mapped_column(String(20), default="conservative", index=True)
+    profile: Mapped[str] = mapped_column(String(20), default="extreme", index=True)
     model: Mapped[str] = mapped_column(String(50))
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     hold: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
@@ -108,7 +112,7 @@ class DecisionOutcome(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     cycle_id: Mapped[str] = mapped_column(String(64), index=True)
-    profile: Mapped[str] = mapped_column(String(20), default="conservative", index=True)
+    profile: Mapped[str] = mapped_column(String(20), default="extreme", index=True)
     record_type: Mapped[str] = mapped_column(String(30))
     symbol: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
     action: Mapped[str] = mapped_column(String(10))
@@ -123,6 +127,9 @@ class DecisionOutcome(Base):
     outcome: Mapped[str] = mapped_column(String(20), default="pending", index=True)
     outcome_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     trade_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    instrument_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    position_side: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    leverage: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=app_now)
     evaluated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
@@ -169,7 +176,7 @@ class CycleRun(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     cycle_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
-    profile: Mapped[str] = mapped_column(String(20), default="conservative", index=True)
+    profile: Mapped[str] = mapped_column(String(20), default="extreme", index=True)
     status: Mapped[str] = mapped_column(String(20), default="running")
     started_at: Mapped[datetime] = mapped_column(DateTime, default=app_now)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -363,15 +370,21 @@ def _migrate_db() -> None:
             "leverage": "INTEGER DEFAULT 1",
             "margin_used": "FLOAT",
             "asset_class": "VARCHAR(20) DEFAULT 'crypto'",
+            "last_funding_at": "DATETIME",
         }),
         ("trades", {
             "instrument_type": "VARCHAR(20) DEFAULT 'spot'",
             "position_side": "VARCHAR(10) DEFAULT 'long'",
             "leverage": "INTEGER DEFAULT 1",
             "asset_class": "VARCHAR(20) DEFAULT 'crypto'",
+            "trade_action": "VARCHAR(10)",
+            "realized_pnl_usdt": "FLOAT",
+            "pnl_pct_roe": "FLOAT",
         }),
         ("decision_outcomes", {
-            "instrument_type": "VARCHAR(20) DEFAULT 'spot'",
+            "instrument_type": "VARCHAR(20)",
+            "position_side": "VARCHAR(10)",
+            "leverage": "INTEGER",
         }),
     ):
         if table not in table_names:
@@ -386,11 +399,11 @@ def _migrate_db() -> None:
 
 
 def _migrate_portfolio_profiles() -> None:
-    """Add profile columns and ensure conservative + aggressive paper portfolios."""
+    """Add profile columns and ensure all configured paper portfolios exist."""
     from sqlalchemy import inspect, text
 
     from ainvestor.config import get_profile_initial_balance
-    from ainvestor.portfolio.profiles import PROFILE_AGGRESSIVE, PROFILE_CONSERVATIVE
+    from ainvestor.portfolio.profiles import PROFILE_EXTREME, PROFILES
 
     inspector = inspect(engine)
     if "portfolios" not in inspector.get_table_names():
@@ -402,7 +415,7 @@ def _migrate_portfolio_profiles() -> None:
             conn.execute(
                 text(
                     "ALTER TABLE portfolios ADD COLUMN profile VARCHAR(20) "
-                    "DEFAULT 'conservative'"
+                    "DEFAULT 'extreme'"
                 )
             )
         if "initial_balance" not in cols:
@@ -423,7 +436,7 @@ def _migrate_portfolio_profiles() -> None:
             continue
         table_cols = {c["name"] for c in inspector.get_columns(table)}
         if col not in table_cols:
-            col_type = "INTEGER" if col == "portfolio_id" else "VARCHAR(20) DEFAULT 'conservative'"
+            col_type = "INTEGER" if col == "portfolio_id" else "VARCHAR(20) DEFAULT 'extreme'"
             with engine.begin() as conn:
                 conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"))
 
@@ -434,12 +447,12 @@ def _migrate_portfolio_profiles() -> None:
         if existing:
             for p in existing:
                 if not getattr(p, "profile", None) or p.profile in ("", "default"):
-                    p.profile = PROFILE_CONSERVATIVE
+                    p.profile = PROFILE_EXTREME
                 if not p.initial_balance:
-                    p.initial_balance = get_profile_initial_balance(PROFILE_CONSERVATIVE)
+                    p.initial_balance = get_profile_initial_balance(p.profile)
             db.commit()
 
-        for profile in (PROFILE_CONSERVATIVE, PROFILE_AGGRESSIVE):
+        for profile in PROFILES:
             row = (
                 db.query(Portfolio)
                 .filter(
@@ -460,6 +473,14 @@ def _migrate_portfolio_profiles() -> None:
                     )
                 )
         db.commit()
+
+        from ainvestor.services.paper_reset import (
+            remove_aggressive_portfolio,
+            remove_conservative_portfolio,
+        )
+
+        remove_conservative_portfolio(db)
+        remove_aggressive_portfolio(db)
     finally:
         db.close()
 

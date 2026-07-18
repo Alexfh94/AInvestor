@@ -24,6 +24,22 @@ logger = logging.getLogger(__name__)
 DEFAULT_FEE_RATE = 0.001
 
 
+def _perp_liq_distance_pct(
+    entry: float, current: float, leverage: int, side: str
+) -> float | None:
+    if leverage <= 1 or entry <= 0:
+        return None
+    liq_threshold = 100 / leverage * 0.9
+    move_pct = abs(current - entry) / entry * 100
+    if side == "long":
+        if current >= entry:
+            return liq_threshold
+        return max(0.0, liq_threshold - move_pct)
+    if current <= entry:
+        return liq_threshold
+    return max(0.0, liq_threshold - move_pct)
+
+
 class PaperTradingSimulator:
     """Internal ledger simulator with real market prices."""
 
@@ -133,6 +149,7 @@ class PaperTradingSimulator:
                 Position.portfolio_id == self.portfolio.id,
                 Position.symbol == symbol,
                 Position.is_open == True,  # noqa: E712
+                Position.instrument_type == "spot",
             )
             .first()
         )
@@ -195,14 +212,36 @@ class PortfolioManager:
 
         position_snapshots: list[PositionSnapshot] = []
         unrealized_total = 0.0
-        positions_value = 0.0
+        positions_equity = 0.0
+        invested_usdt = 0.0
 
         for pos in positions:
             current = prices.get(pos.symbol, pos.entry_price)
-            unrealized = (current - pos.entry_price) * pos.amount
+            inst = getattr(pos, "instrument_type", "spot") or "spot"
+            side = getattr(pos, "position_side", "long") or "long"
+            leverage = getattr(pos, "leverage", 1) or 1
+            margin = getattr(pos, "margin_used", None) or 0.0
+
+            if inst == "perpetual":
+                if side == "long":
+                    unrealized = (current - pos.entry_price) * pos.amount
+                else:
+                    unrealized = (pos.entry_price - current) * pos.amount
+                notional = current * pos.amount
+                equity = margin + unrealized
+                invested_usdt += margin
+                roe = (unrealized / margin * 100) if margin > 0 else None
+                liq_dist = _perp_liq_distance_pct(pos.entry_price, current, leverage, side)
+            else:
+                unrealized = (current - pos.entry_price) * pos.amount
+                notional = current * pos.amount
+                equity = notional
+                invested_usdt += notional
+                roe = None
+                liq_dist = None
+
             unrealized_total += unrealized
-            pos_value = current * pos.amount
-            positions_value += pos_value
+            positions_equity += equity
             asset = pos.symbol.split("/")[0] if "/" in pos.symbol else pos.symbol
             position_snapshots.append(
                 PositionSnapshot(
@@ -211,20 +250,23 @@ class PortfolioManager:
                     amount=pos.amount,
                     entry_price=pos.entry_price,
                     current_price=current,
-                    value_usdt=pos_value,
+                    value_usdt=equity,
                     pct_of_portfolio=0.0,
                     unrealized_pnl=unrealized,
                     stop_loss=pos.stop_loss,
                     take_profit=pos.take_profit,
-                    instrument_type=getattr(pos, "instrument_type", "spot"),
-                    position_side=getattr(pos, "position_side", "long"),
-                    leverage=getattr(pos, "leverage", 1),
+                    instrument_type=inst,
+                    position_side=side,
+                    leverage=leverage,
                     asset_class=getattr(pos, "asset_class", "crypto"),
+                    margin_used=margin if inst == "perpetual" else None,
+                    notional_usdt=notional if inst == "perpetual" else None,
+                    roe_pct=roe,
+                    liq_distance_pct=liq_dist,
                 )
             )
 
-        total_value = portfolio.quote_balance + positions_value
-        invested_usdt = positions_value
+        total_value = portfolio.quote_balance + positions_equity
         cash_pct = (portfolio.quote_balance / total_value * 100) if total_value > 0 else 100.0
 
         if total_value > 0:

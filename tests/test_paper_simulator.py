@@ -18,7 +18,7 @@ def db_session():
     session = Session()
     portfolio = Portfolio(
         mode="paper",
-        profile="conservative",
+        profile="extreme",
         quote_balance=10000.0,
         initial_balance=100.0,
         quote_currency="USDT",
