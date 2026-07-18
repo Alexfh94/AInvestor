@@ -7,7 +7,7 @@ from ainvestor.utils.datetime_utils import app_now_iso, format_app_datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from ainvestor.config import get_settings, load_risk_config
+from ainvestor.config import get_profile_ai_cycle_interval, get_settings, load_risk_config
 from ainvestor.cycle_runner import CycleRunner
 from ainvestor.db.models import AIDecision, CycleRun, DecisionOutcome, Portfolio, Trade, get_db
 from ainvestor.engine.learning import DecisionLearning
@@ -17,7 +17,7 @@ from ainvestor.portfolio.profiles import PROFILE_LABELS, PROFILES, normalize_pro
 router = APIRouter()
 
 
-def _profile_param(profile: str = Query("conservative", alias="profile")) -> str:
+def _profile_param(profile: str = Query("extreme", alias="profile")) -> str:
     return normalize_profile(profile)
 
 
@@ -52,18 +52,12 @@ async def get_portfolio(
     db: Session = Depends(get_db),
     profile: str = Depends(_profile_param),
 ):
+    from ainvestor.services.market_prices import get_open_position_symbols, resolve_prices
+
     mgr = PortfolioManager(db, profile=profile)
-    from ainvestor.collectors.market import MarketCollector
-
-    collector = MarketCollector(db)
-    prices: dict[str, float] = {}
-    for symbol in collector.pairs:
-        try:
-            ticker = await collector.client.fetch_ticker(symbol)
-            prices[symbol] = ticker.get("last") or ticker.get("close", 0)
-        except Exception:
-            pass
-
+    portfolio = mgr.get_or_create_portfolio()
+    live_symbols = get_open_position_symbols(db, portfolio.id)
+    prices = await resolve_prices(db, live_symbols=live_symbols)
     snapshot = await mgr.get_snapshot(prices)
     return snapshot.model_dump()
 
@@ -74,23 +68,11 @@ async def get_trades(
     db: Session = Depends(get_db),
     profile: str = Depends(_profile_param),
 ):
+    from ainvestor.services.trade_labels import trade_to_api_dict
+
     mgr = PortfolioManager(db, profile=profile)
     trades = mgr.get_trade_history(limit=limit)
-    return [
-        {
-            "id": t.id,
-            "symbol": t.symbol,
-            "side": t.side,
-            "amount": t.amount,
-            "price": t.price,
-            "value_usdt": t.value_usdt,
-            "fee": t.fee,
-            "mode": t.mode,
-            "status": t.status,
-            "executed_at": format_app_datetime(t.executed_at),
-        }
-        for t in trades
-    ]
+    return [trade_to_api_dict(t) for t in trades]
 
 
 @router.get("/decisions")
@@ -106,13 +88,20 @@ async def get_decisions(
         .limit(limit)
         .all()
     )
-    result = []
-    for d in decisions:
-        outcomes = (
+    cycle_ids = [d.cycle_id for d in decisions]
+    outcomes_by_cycle: dict[str, list] = {cid: [] for cid in cycle_ids}
+    if cycle_ids:
+        all_outcomes = (
             db.query(DecisionOutcome)
-            .filter(DecisionOutcome.cycle_id == d.cycle_id)
+            .filter(DecisionOutcome.cycle_id.in_(cycle_ids))
             .all()
         )
+        for o in all_outcomes:
+            outcomes_by_cycle.setdefault(o.cycle_id, []).append(o)
+
+    result = []
+    for d in decisions:
+        outcomes = outcomes_by_cycle.get(d.cycle_id, [])
         result.append(
             {
                 "cycle_id": d.cycle_id,
@@ -135,6 +124,9 @@ async def get_decisions(
                     {
                         "symbol": o.symbol,
                         "action": o.action,
+                        "instrument_type": o.instrument_type,
+                        "position_side": o.position_side,
+                        "leverage": o.leverage,
                         "execution_status": o.execution_status,
                         "outcome": o.outcome,
                         "return_pct": o.return_pct,
@@ -166,20 +158,31 @@ async def get_ai_usage(
     profile: str | None = Query(None, alias="profile"),
 ):
     """Resumen acumulado de tokens consumidos por ciclos IA."""
-    query = db.query(AIDecision)
+    from sqlalchemy import func
+
+    filt = db.query(AIDecision)
     if profile:
-        query = query.filter(AIDecision.profile == normalize_profile(profile))
-    decisions = query.all()
-    total_in = sum(d.tokens_input or 0 for d in decisions)
-    total_out = sum(d.tokens_output or 0 for d in decisions)
-    total_cache = sum(d.tokens_cache_read or 0 for d in decisions)
+        filt = filt.filter(AIDecision.profile == normalize_profile(profile))
+
+    totals = filt.with_entities(
+        func.count(AIDecision.id),
+        func.coalesce(func.sum(AIDecision.tokens_input), 0),
+        func.coalesce(func.sum(AIDecision.tokens_output), 0),
+        func.coalesce(func.sum(AIDecision.tokens_cache_read), 0),
+    ).one()
+
+    recent_q = db.query(AIDecision)
+    if profile:
+        recent_q = recent_q.filter(AIDecision.profile == normalize_profile(profile))
+    recent = recent_q.order_by(AIDecision.created_at.desc()).limit(10).all()
+
     return {
         "profile": profile,
-        "cycles": len(decisions),
-        "total_input_tokens": total_in,
-        "total_output_tokens": total_out,
-        "total_cache_read_tokens": total_cache,
-        "total_tokens": total_in + total_out,
+        "cycles": int(totals[0] or 0),
+        "total_input_tokens": int(totals[1] or 0),
+        "total_output_tokens": int(totals[2] or 0),
+        "total_cache_read_tokens": int(totals[3] or 0),
+        "total_tokens": int(totals[1] or 0) + int(totals[2] or 0),
         "recent": [
             {
                 "cycle_id": d.cycle_id[:8],
@@ -189,7 +192,7 @@ async def get_ai_usage(
                 "input_tokens": d.tokens_input or 0,
                 "output_tokens": d.tokens_output or 0,
             }
-            for d in sorted(decisions, key=lambda x: x.created_at, reverse=True)[:10]
+            for d in recent
         ],
     }
 
@@ -200,7 +203,6 @@ async def get_learning(
     profile: str = Depends(_profile_param),
 ):
     learning = DecisionLearning(db, profile=profile)
-    learning.backfill_from_decisions()
     recent = (
         db.query(DecisionOutcome)
         .filter(DecisionOutcome.profile == profile)
@@ -223,6 +225,9 @@ async def get_learning(
                 "summary": r.summary,
                 "reasoning": r.reasoning,
                 "notes": r.outcome_notes,
+                "instrument_type": r.instrument_type,
+                "position_side": r.position_side,
+                "leverage": r.leverage,
                 "created_at": format_app_datetime(r.created_at),
                 "evaluated_at": format_app_datetime(r.evaluated_at),
             }
@@ -270,6 +275,17 @@ async def run_cycle_manual(
     return {"profiles": results}
 
 
+@router.post("/paper/reset")
+async def reset_paper_data(
+    clear_market: bool = Query(False),
+    db: Session = Depends(get_db),
+):
+    from ainvestor.services.paper_reset import reset_paper_portfolios
+
+    reset_paper_portfolios(db, clear_market_history=clear_market)
+    return {"status": "ok", "message": "Paper portfolios reset to initial balance"}
+
+
 @router.post("/kill-switch/{action}")
 async def toggle_kill_switch(
     action: str,
@@ -302,54 +318,53 @@ async def dex_status():
 
 
 @router.get("/market/context")
-async def get_market_context(db: Session = Depends(get_db)):
-    """Latest market context from last cycle or live collection."""
-    from ainvestor.cycle_runner import get_last_market_context
-    from ainvestor.collectors.macro import MacroCollector
-    from ainvestor.collectors.derivatives_store import DerivativesCollector
-    from ainvestor.collectors.sentiment import SentimentCollector
-    from ainvestor.collectors.news import NewsCollector
-    from ainvestor.services.market_hours import market_status_label
+async def get_market_context(
+    db: Session = Depends(get_db),
+    fresh: bool = Query(False, alias="fresh"),
+):
+    """Latest market context from cache/DB; live collect only if stale or fresh=true."""
+    from ainvestor.services.market_context_cache import get_market_context
 
-    cached = get_last_market_context()
-    if cached:
-        return cached
-
-    macro = await MacroCollector().collect()
-    deriv = await DerivativesCollector(db).collect_and_persist()
-    sentiment = await SentimentCollector(db).collect(btc_dominance=macro.btc_dominance)
-    news = await NewsCollector(db).collect()
-
-    return {
-        "macro": macro.model_dump(mode="json"),
-        "derivatives": [d.model_dump(mode="json") for d in deriv],
-        "sentiment": sentiment.model_dump(mode="json"),
-        "news": [n.model_dump(mode="json") for n in news[:10]],
-        "market_status": market_status_label(),
-        "captured_at": app_now_iso(),
-    }
+    return await get_market_context(db, fresh=fresh)
 
 
 @router.get("/portfolio/unified")
 async def get_unified_portfolio(db: Session = Depends(get_db)):
-    from ainvestor.collectors.market import MarketCollector
     from ainvestor.collectors.stocks import StockCollector
     from ainvestor.portfolio.unified import UnifiedPortfolioManager
+    from ainvestor.services.market_prices import resolve_prices
 
-    crypto_collector = MarketCollector(db)
-    prices: dict[str, float] = {}
-    for symbol in crypto_collector.pairs:
-        try:
-            ticker = await crypto_collector.client.fetch_ticker(symbol)
-            prices[symbol] = ticker.get("last") or ticker.get("close", 0)
-        except Exception:
-            pass
-
+    prices = await resolve_prices(db)
     stock_tickers = await StockCollector().collect_all()
     stock_prices = {t.symbol: t.last for t in stock_tickers}
 
     unified = await UnifiedPortfolioManager(db).get_snapshot(prices, stock_prices)
     return unified.model_dump()
+
+
+@router.get("/dashboard")
+async def get_dashboard(
+    db: Session = Depends(get_db),
+    profile: str = Depends(_profile_param),
+):
+    """Aggregated dashboard payload (single round-trip)."""
+    from ainvestor.services.market_context_cache import get_market_context
+
+    portfolio = await get_portfolio(db=db, profile=profile)
+    trades = await get_trades(limit=10, db=db, profile=profile)
+    decisions = await get_decisions(limit=10, db=db, profile=profile)
+    learning = await get_learning(db=db, profile=profile)
+    token_usage = await get_ai_usage(db=db, profile=profile)
+    market_context = await get_market_context(db, fresh=False)
+    return {
+        "profile": profile,
+        "portfolio": portfolio,
+        "trades": trades,
+        "decisions": decisions,
+        "learning": learning,
+        "token_usage": token_usage,
+        "market_context": market_context,
+    }
 
 
 @router.get("/ibkr/status")
@@ -395,8 +410,11 @@ async def get_config(profile: str = Depends(_profile_param)):
         "profile_label": PROFILE_LABELS.get(profile, profile),
         "trading_mode": settings.trading_mode,
         "ai_model": settings.effective_ai_model(),
+        "ai_use_mcp": settings.ai_use_mcp,
+        "cursor_configured": bool(settings.cursor_api_key.strip()),
+        "cursor_model": settings.cursor_model_selection().to_json(),
         "intervals": {
-            "ai_cycle": settings.ai_cycle_interval,
+            "ai_cycle": get_profile_ai_cycle_interval(profile),
             "risk_monitor": settings.risk_monitor_interval,
             "market_collect": settings.market_collect_interval,
         },

@@ -16,10 +16,24 @@ Write-Host "==> Comprobando SSH a ${SshUser}@${VmIp}..."
 ssh @sshArgs -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 "${SshUser}@${VmIp}" "echo ok"
 
 Write-Host "==> Preparando directorio remoto..."
-ssh @sshArgs "${SshUser}@${VmIp}" "sudo mkdir -p $RemotePath && sudo chown `$USER:`$USER $RemotePath"
+ssh @sshArgs "${SshUser}@${VmIp}" "sudo mkdir -p $RemotePath/data && sudo chown -R `$USER:`$USER $RemotePath"
 
-Write-Host "==> Copiando proyecto..."
-scp @sshArgs -r "$LocalPath\*" "${SshUser}@${VmIp}:${RemotePath}/"
+Write-Host "==> Copiando proyecto (sin data/ - la BD de la VM se conserva)..."
+$staging = Join-Path $env:TEMP "ainvestor-deploy-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
+New-Item -ItemType Directory -Path $staging -Force | Out-Null
+try {
+    # /XD data: no sobrescribir ainvestor.db remoto con copia local
+    robocopy $LocalPath $staging /E /XD data .git __pycache__ .pytest_cache node_modules /XF *.pyc /NFL /NDL /NJH /NJS /nc /ns /np | Out-Null
+    if ($LASTEXITCODE -ge 8) {
+        throw "robocopy falló con código $LASTEXITCODE"
+    }
+    scp @sshArgs -r "$staging\*" "${SshUser}@${VmIp}:${RemotePath}/"
+}
+finally {
+    if (Test-Path $staging) {
+        Remove-Item -Recurse -Force $staging
+    }
+}
 
 if (Test-Path "$LocalPath\.env") {
     Write-Host "==> Copiando .env..."

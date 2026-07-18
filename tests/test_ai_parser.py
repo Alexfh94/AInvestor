@@ -1,7 +1,31 @@
-"""Tests for AI response parsing."""
+"""Tests for AI response parsing and prompt building."""
 
-from ainvestor.engine.ai_agent import parse_trade_proposal
+from ainvestor.config import load_risk_config
+from ainvestor.engine.ai_agent import (
+    _is_bridge_token_arg_error,
+    build_cycle_prompt,
+    parse_trade_proposal,
+)
 from ainvestor.models.schemas import DecisionAction
+from ainvestor.portfolio.profiles import PROFILE_EXTREME
+
+
+def test_build_cycle_prompt_includes_execution_cadence():
+    prompt = build_cycle_prompt(
+        portfolio_summary="100 USDT cash",
+        market_summary="BTC flat",
+        signals_summary="neutral",
+        news_summary="none",
+        sentiment_summary="neutral",
+        risk_config=load_risk_config(profile=PROFILE_EXTREME),
+        profile=PROFILE_EXTREME,
+        ai_cycle_interval_minutes=30,
+        risk_monitor_interval_minutes=5,
+    )
+    assert "every **30 minutes** only" in prompt
+    assert "every **5 minutes**" in prompt
+    assert "1–3 cycles" in prompt
+    assert "90 min" in prompt
 
 
 def test_parse_valid_json():
@@ -22,3 +46,9 @@ def test_parse_markdown_wrapped():
 def test_parse_invalid_returns_hold():
     decision = parse_trade_proposal("not json at all")
     assert decision.hold is True
+
+
+def test_bridge_token_arg_error_detection():
+    exc = RuntimeError("Missing value for --tool-callback-auth-token")
+    assert _is_bridge_token_arg_error(exc) is True
+    assert _is_bridge_token_arg_error(RuntimeError("connection refused")) is False

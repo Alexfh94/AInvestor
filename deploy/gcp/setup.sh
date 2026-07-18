@@ -20,11 +20,11 @@ fi
 sudo mkdir -p "$APP_DIR"
 sudo chown "$USER:$USER" "$APP_DIR"
 
-if [ ! -d "$APP_DIR/.git" ]; then
-  git clone --branch "$BRANCH" "$REPO_URL" "$APP_DIR"
-else
+if [ -d "$APP_DIR/.git" ]; then
   cd "$APP_DIR"
   git pull --ff-only
+elif [ ! -f "$APP_DIR/docker-compose.yml" ]; then
+  git clone --branch "$BRANCH" "$REPO_URL" "$APP_DIR"
 fi
 
 cd "$APP_DIR"
@@ -38,6 +38,17 @@ if [ ! -f .env ]; then
 fi
 
 mkdir -p data
+
+# e2-micro tiene ~1GB RAM; swap evita cuelgues por presión de memoria
+if [ ! -f /swapfile ]; then
+  echo "==> Configurando swap 1GB..."
+  sudo fallocate -l 1G /swapfile
+  sudo chmod 600 /swapfile
+  sudo mkswap /swapfile
+  sudo swapon /swapfile
+  grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+fi
+
 if docker compose version >/dev/null 2>&1; then
   sudo docker compose up -d --build
 elif command -v docker-compose >/dev/null; then

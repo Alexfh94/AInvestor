@@ -5,6 +5,9 @@ services:
       - "8000:8000"
     environment:
       TZ: Europe/Madrid
+      APP_ENV: production
+      AI_MODEL: composer-2.5
+      AI_USE_MCP: "false"
     env_file:
       - .env
     volumes:

@@ -37,17 +37,30 @@ class Settings(BaseSettings):
     cursor_api_key: str = ""
     ai_model: str = "composer-2.5"
     ai_use_fast: bool = False
-    ai_fallback_enabled: bool = True
+    # MCP tools add a Node bridge dependency; off by default in headless/Docker.
+    ai_use_mcp: bool = False
 
     def effective_ai_model(self) -> str:
-        """Resolve Cursor model id; strip -fast unless ai_use_fast is enabled."""
-        base = self.ai_model.removesuffix("-fast") if self.ai_model.endswith("-fast") else self.ai_model
-        if self.ai_use_fast and not base.endswith("-fast"):
-            return f"{base}-fast"
-        return base
+        """Resolve Composer model id (strip legacy -fast suffix from env)."""
+        model = self.ai_model.strip() or "composer-2.5"
+        while model.endswith("-fast"):
+            model = model[: -len("-fast")]
+        return model or "composer-2.5"
 
-    openai_api_key: str = ""
-    openai_model: str = "gpt-4o-mini"
+    def cursor_model_selection(self):
+        """
+        Cursor SDK model selection.
+
+        Passing only model id (e.g. composer-2.5) uses the API default variant,
+        which is fast=true. We always request fast=false unless AI_USE_FAST=true.
+        """
+        from cursor_sdk import ModelParameterValue, ModelSelection
+
+        use_fast = self.ai_use_fast
+        return ModelSelection(
+            id=self.effective_ai_model(),
+            params=(ModelParameterValue(id="fast", value="true" if use_fast else "false"),),
+        )
 
     cryptopanic_api_key: str = ""
     reddit_client_id: str = ""
@@ -56,7 +69,7 @@ class Settings(BaseSettings):
 
     risk_monitor_interval: int = 5
     market_collect_interval: int = 15
-    ai_cycle_interval: int = 60
+    ai_cycle_interval: int = 120
     decision_eval_hours: int = 24
 
     telegram_bot_token: str = ""
@@ -110,7 +123,7 @@ def load_risk_config(path: Path | None = None, profile: str | None = None) -> di
 
     profile_cfg = copy.deepcopy(raw["profiles"][prof])
     for key, value in profile_cfg.items():
-        if key in ("initial_balance_usdt", "prompt_style"):
+        if key in ("initial_balance_usdt", "prompt_style", "ai_cycle_interval_minutes"):
             merged[key] = value
         else:
             merged[key] = copy.deepcopy(value)
@@ -140,3 +153,19 @@ def get_all_market_pairs(path: Path | None = None) -> list[str]:
 def get_profile_initial_balance(profile: str, path: Path | None = None) -> float:
     cfg = load_risk_config(path, profile=profile)
     return float(cfg.get("initial_balance_usdt", get_settings().paper_initial_balance))
+
+
+def get_profile_ai_cycle_interval(profile: str, path: Path | None = None) -> int:
+    """AI cycle interval in minutes for a portfolio profile."""
+    from ainvestor.portfolio.profiles import DEFAULT_PROFILE, PROFILES, normalize_profile
+
+    prof = normalize_profile(profile)
+    cfg = load_risk_config(path, profile=prof)
+    if cfg.get("ai_cycle_interval_minutes") is not None:
+        return int(cfg["ai_cycle_interval_minutes"])
+    defaults = {
+        "extreme": 30,
+    }
+    if prof in defaults:
+        return defaults[prof]
+    return get_settings().ai_cycle_interval
