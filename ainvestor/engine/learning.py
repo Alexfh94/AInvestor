@@ -9,7 +9,7 @@ from ainvestor.utils.datetime_utils import app_now
 from sqlalchemy.orm import Session
 
 from ainvestor.config import get_settings
-from ainvestor.db.models import AIDecision, DecisionOutcome
+from ainvestor.db.models import AIDecision, DecisionOutcome, Portfolio, Trade
 from ainvestor.engine.proposal_order import proposal_execution_key
 from ainvestor.models.schemas import CycleDecision, TradeProposal
 from ainvestor.portfolio.profiles import DEFAULT_PROFILE, normalize_profile
@@ -282,6 +282,47 @@ class DecisionLearning:
                 avg = sum(returns) / len(returns)
                 lines.append(f"  {key}: {avg:+.2f}% ({len(returns)} ops)")
 
+        trade_stats = self.build_symbol_side_stats()
+        if trade_stats:
+            lines.append(trade_stats)
+
+        return "\n".join(lines)
+
+    def build_symbol_side_stats(self, days: int = 7) -> str:
+        """PnL realizado por símbolo+lado (últimos N días) — evita repetir patrones perdedores."""
+        portfolio = (
+            self.db.query(Portfolio)
+            .filter(Portfolio.profile == self.profile)
+            .first()
+        )
+        if portfolio is None:
+            return ""
+
+        since = app_now() - timedelta(days=days)
+        closes = (
+            self.db.query(Trade)
+            .filter(
+                Trade.portfolio_id == portfolio.id,
+                Trade.trade_action == "close",
+                Trade.executed_at >= since,
+                Trade.realized_pnl_usdt.isnot(None),
+            )
+            .all()
+        )
+        if not closes:
+            return ""
+
+        stats: dict[tuple[str, str], list[float]] = {}
+        for t in closes:
+            key = (t.symbol, t.position_side or "long")
+            stats.setdefault(key, []).append(t.realized_pnl_usdt or 0.0)
+
+        lines = [f"PnL realizado por símbolo+lado (últimos {days} días) — no repitas perdedores:"]
+        for (symbol, side), pnls in sorted(stats.items(), key=lambda kv: sum(kv[1])):
+            wins = sum(1 for p in pnls if p > 0)
+            losses = len(pnls) - wins
+            total = sum(pnls)
+            lines.append(f"  {symbol} {side}: {wins}G/{losses}P, {total:+.2f} USDT")
         return "\n".join(lines)
 
     def get_stats(self) -> dict:

@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from ainvestor.engine.exit_rules import mandatory_close_proposals, position_trend_aligned
+from ainvestor.engine.exit_rules import (
+    mandatory_close_proposals,
+    position_trend_aligned,
+    roe_stop_loss_triggers,
+    roe_take_profit_triggers,
+)
 from ainvestor.models.schemas import (
     PortfolioSnapshot,
     PositionSnapshot,
@@ -44,32 +49,7 @@ def _snapshot(positions: list[PositionSnapshot]) -> PortfolioSnapshot:
     )
 
 
-def test_mandatory_close_on_profit_with_misaligned_trend():
-    pos = _perp_position(roe=15.0)
-    signal = TechnicalSignal(symbol="ETH/USDT", trend_1h="bearish", trend="bearish")
-    proposals = mandatory_close_proposals(
-        _snapshot([pos]),
-        {"ETH/USDT": signal},
-        {"ETH/USDT": 50},
-        PROFILE_EXTREME,
-    )
-    assert len(proposals) == 1
-    assert proposals[0].action.value == "sell"
-
-
-def test_mandatory_close_on_loss_low_quant():
-    pos = _perp_position(roe=-6.0)
-    signal = TechnicalSignal(symbol="ETH/USDT", trend_1h="bearish", trend="bearish")
-    proposals = mandatory_close_proposals(
-        _snapshot([pos]),
-        {"ETH/USDT": signal},
-        {"ETH/USDT": 35},
-        PROFILE_EXTREME,
-    )
-    assert len(proposals) == 1
-
-
-def test_no_mandatory_close_when_trend_aligned():
+def test_mandatory_close_on_profit_regardless_of_trend():
     pos = _perp_position(roe=15.0)
     signal = TechnicalSignal(symbol="ETH/USDT", trend_1h="bullish", trend="bullish")
     proposals = mandatory_close_proposals(
@@ -78,7 +58,52 @@ def test_no_mandatory_close_when_trend_aligned():
         {"ETH/USDT": 70},
         PROFILE_EXTREME,
     )
+    assert len(proposals) == 1
+    assert proposals[0].action.value == "sell"
+    assert proposals[0].take_profit_pct == 1.2
+
+
+def test_mandatory_close_on_loss_regardless_of_quant():
+    """El corte a -8% ROE es incondicional, aunque el quant siga alto."""
+    pos = _perp_position(roe=-9.0)
+    signal = TechnicalSignal(symbol="ETH/USDT", trend_1h="bearish", trend="bearish")
+    proposals = mandatory_close_proposals(
+        _snapshot([pos]),
+        {"ETH/USDT": signal},
+        {"ETH/USDT": 75},
+        PROFILE_EXTREME,
+    )
+    assert len(proposals) == 1
+    assert "corte de pérdida" in proposals[0].reasoning
+
+
+def test_no_mandatory_close_on_moderate_loss_leaves_ai_decision():
+    pos = _perp_position(roe=-5.0)
+    signal = TechnicalSignal(symbol="ETH/USDT", trend_1h="bullish", trend="bullish")
+    proposals = mandatory_close_proposals(
+        _snapshot([pos]),
+        {"ETH/USDT": signal},
+        {"ETH/USDT": 35},
+        PROFILE_EXTREME,
+    )
     assert proposals == []
+
+
+def test_roe_take_profit_triggers():
+    pos = _perp_position(roe=13.0)
+    triggers = roe_take_profit_triggers(_snapshot([pos]), PROFILE_EXTREME)
+    assert triggers == [("ETH/USDT", 100.0)]
+
+
+def test_roe_stop_loss_triggers():
+    pos = _perp_position(roe=-8.5)
+    triggers = roe_stop_loss_triggers(_snapshot([pos]), PROFILE_EXTREME)
+    assert triggers == [("ETH/USDT", 100.0)]
+
+
+def test_roe_stop_loss_no_trigger_on_moderate_loss():
+    pos = _perp_position(roe=-5.0)
+    assert roe_stop_loss_triggers(_snapshot([pos]), PROFILE_EXTREME) == []
 
 
 def test_position_trend_aligned():

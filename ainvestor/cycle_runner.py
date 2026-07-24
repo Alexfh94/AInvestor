@@ -17,7 +17,12 @@ from ainvestor.config import get_profile_ai_cycle_interval, get_settings, load_r
 from ainvestor.db.models import AIDecision, CycleRun
 from ainvestor.engine.ai_agent import AIAgent, build_cycle_prompt
 from ainvestor.engine.executor import TradeExecutor
-from ainvestor.engine.exit_rules import mandatory_close_proposals, update_trailing_stops
+from ainvestor.engine.exit_rules import (
+    mandatory_close_proposals,
+    roe_stop_loss_triggers,
+    roe_take_profit_triggers,
+    update_trailing_stops,
+)
 from ainvestor.engine.instrument_context import build_instrument_opportunities
 from ainvestor.engine.learning import DecisionLearning
 from ainvestor.engine.proposal_order import proposal_execution_key, sort_proposals_for_execution
@@ -184,6 +189,7 @@ class CycleRunner:
                     funding_rate=funding_rate,
                     derivatives_available=derivatives_available,
                     cycle_proposals=ordered_proposals,
+                    signal=signals_by_symbol.get(proposal.symbol),
                 )
                 if check.approved:
                     success = await self.executor.execute_approved(
@@ -319,6 +325,14 @@ class CycleRunner:
                     funded.append(pos.symbol)
 
         triggers = self.risk.check_stop_loss_take_profit(snapshot)
+        roe_tp = roe_take_profit_triggers(snapshot, self.profile)
+        roe_sl = roe_stop_loss_triggers(snapshot, self.profile)
+        seen_symbols = {t[0] for t in triggers}
+        for symbol, price in roe_tp + roe_sl:
+            if symbol not in seen_symbols:
+                triggers.append((symbol, "sell", price))
+                seen_symbols.add(symbol)
+
         executed = []
         for symbol, action, price in triggers:
             if action == "sell":
@@ -421,7 +435,8 @@ class CycleRunner:
                     f"  {pos.symbol} [perpetual {side} {lev}x]: margin {margin:.2f} USDT, "
                     f"notional {notional:.2f}, entry {pos.entry_price:.2f}, "
                     f"mark {pos.current_price:.2f}, PnL {pos.unrealized_pnl:+.2f}, "
-                    f"ROE {roe}, liq_dist ~{liq}"
+                    f"ROE {roe}, liq_dist ~{liq}, "
+                    f"auto-TP +12% ROE / auto-SL -8% ROE (monitor every 2 min)"
                 )
             else:
                 lines.append(

@@ -67,8 +67,8 @@ class Settings(BaseSettings):
     reddit_client_secret: str = ""
     reddit_user_agent: str = "ainvestor/0.1"
 
-    risk_monitor_interval: int = 5
-    market_collect_interval: int = 15
+    risk_monitor_interval: int = 2
+    market_collect_interval: int = 5
     ai_cycle_interval: int = 120
     decision_eval_hours: int = 24
 
@@ -117,7 +117,16 @@ def load_risk_config(path: Path | None = None, profile: str | None = None) -> di
         prof = DEFAULT_PROFILE
 
     merged: dict = {}
-    for key in ("fees", "stops", "allocation", "modes", "ibkr", "version"):
+    for key in (
+        "fees",
+        "stops",
+        "profit_optimization",
+        "exit_rules",
+        "allocation",
+        "modes",
+        "ibkr",
+        "version",
+    ):
         if key in raw:
             merged[key] = copy.deepcopy(raw[key])
 

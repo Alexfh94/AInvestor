@@ -48,7 +48,7 @@ def _perp_proposal(
     position_side: str = "long",
     amount_pct: float = 100.0,
     stop_loss_pct: float = 10.0,
-    take_profit_pct: float = 1.5,
+    take_profit_pct: float = 1.2,
     leverage: int = 10,
 ) -> TradeProposal:
     return TradeProposal(
@@ -103,13 +103,14 @@ def test_extreme_requires_all_in(db_session):
     assert any("all-in" in r.lower() for r in result.rejection_reasons)
 
 
-def test_extreme_rejects_stop_loss_below_leverage_floor(db_session):
+def test_extreme_auto_adjusts_stop_loss_to_roe_target(db_session):
+    """SL de perps se ajusta a stop_loss_roe_pct/leverage (0.8% precio a 10x)."""
     portfolio = db_session.query(Portfolio).filter(Portfolio.profile == PROFILE_EXTREME).first()
     risk = RiskManager(db_session, profile=PROFILE_EXTREME)
-    proposal = _perp_proposal(stop_loss_pct=5.0, leverage=10)
+    proposal = _perp_proposal(stop_loss_pct=10.0, leverage=10)
     result = risk.validate_proposal(proposal, _snapshot(portfolio), current_price=50000.0)
-    assert result.approved is False
-    assert any("stop-loss" in r.lower() for r in result.rejection_reasons)
+    assert result.approved is True
+    assert proposal.stop_loss_pct == pytest.approx(0.8)
 
 
 def test_extreme_accepts_all_in_perp(db_session):

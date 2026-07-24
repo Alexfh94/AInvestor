@@ -68,6 +68,7 @@ class RiskManager:
         funding_rate: float = 0.0,
         derivatives_available: bool = True,
         cycle_proposals: list[TradeProposal] | None = None,
+        signal=None,
     ) -> RiskCheckResult:
         reasons: list[str] = []
 
@@ -109,6 +110,7 @@ class RiskManager:
                     derivatives_available,
                     quant_conviction=quant_conviction,
                     quant_map=quant_map,
+                    signal=signal,
                 )
             )
         else:
@@ -150,6 +152,7 @@ class RiskManager:
         derivatives_available: bool = True,
         quant_conviction: int | None = None,
         quant_map: dict[str, int] | None = None,
+        signal=None,
     ) -> list[str]:
         reasons: list[str] = []
         deriv = self.config.get("derivatives", {})
@@ -198,11 +201,14 @@ class RiskManager:
                 reasons.append("Max open perpetual positions reached")
 
         if is_opening:
+            self._auto_adjust_perp_stop_loss(proposal)
             if not derivatives_available:
                 reasons.append(
                     "Derivatives data (funding/OI) unavailable — perpetual open blocked"
                 )
             reasons.extend(self._check_extreme_all_in(proposal, is_close=False))
+            reasons.extend(self._check_trend_alignment(proposal, signal))
+            reasons.extend(self._check_tp_reachability(proposal, signal))
             reasons.extend(
                 self._validate_buy(
                     proposal,
@@ -245,14 +251,52 @@ class RiskManager:
             ]
         return []
 
-    def _check_stop_loss_vs_leverage(self, proposal: TradeProposal) -> list[str]:
+    def _auto_adjust_perp_stop_loss(self, proposal: TradeProposal) -> None:
+        """Fija el SL de perps al equivalente de stop_loss_roe_pct en precio.
+
+        A 10x con stop -8% ROE → SL a 0.8% de precio: corta la pérdida en -8% de
+        margen en vez de dejarla correr hasta liquidación.
+        """
         if proposal.leverage <= 0:
+            return
+        exit_cfg = self.config.get("exit_rules", {})
+        stop_roe = abs(float(exit_cfg.get("stop_loss_roe_pct", -8.0)))
+        liq_pct = 100.0 / proposal.leverage
+        target_sl = min(stop_roe / proposal.leverage, liq_pct)
+        if abs(proposal.stop_loss_pct - target_sl) > 0.01:
+            proposal.stop_loss_pct = target_sl
+
+    def _check_trend_alignment(self, proposal: TradeProposal, signal) -> list[str]:
+        """Bloquea aperturas cuya dirección contradiga la tendencia 4h."""
+        if signal is None:
             return []
-        min_sl = 100.0 / proposal.leverage
-        if proposal.stop_loss_pct < min_sl - 0.01:
+        trend_4h = getattr(signal, "trend_4h", None)
+        if not trend_4h or trend_4h == "neutral":
+            return []
+        side = proposal.position_side or "long"
+        if side == "long" and trend_4h == "bearish":
             return [
-                f"Stop-loss {proposal.stop_loss_pct:.2f}% below minimum {min_sl:.2f}% "
-                f"for {proposal.leverage}x leverage (max margin loss)"
+                f"4h trend bearish on {proposal.symbol} — long against trend blocked"
+            ]
+        if side == "short" and trend_4h == "bullish":
+            return [
+                f"4h trend bullish on {proposal.symbol} — short against trend blocked"
+            ]
+        return []
+
+    def _check_tp_reachability(self, proposal: TradeProposal, signal) -> list[str]:
+        """Bloquea aperturas si la volatilidad (ATR 1h) hace inalcanzable el TP objetivo."""
+        if signal is None:
+            return []
+        atr_pct = getattr(signal, "atr_pct", None)
+        if atr_pct is None or atr_pct <= 0:
+            return []
+        stops_cfg = self.config.get("stops", {})
+        target_tp = float(stops_cfg.get("target_take_profit_pct_perp", 1.2))
+        if atr_pct * 3 < target_tp:
+            return [
+                f"ATR 1h {atr_pct:.2f}% too low on {proposal.symbol} — "
+                f"TP {target_tp:.1f}% unreachable within horizon"
             ]
         return []
 
@@ -331,7 +375,49 @@ class RiskManager:
         fee = close_notional * fee_rate
         if close_notional - fee <= 0:
             reasons.append("Close value too small after fees")
+        reasons.extend(self._check_min_hold(proposal, position, portfolio.portfolio_id))
         return reasons
+
+    def _check_min_hold(
+        self, proposal: TradeProposal, snap_position, portfolio_id: int
+    ) -> list[str]:
+        """Anti-churn: bloquea cierres discrecionales muy tempranos sin ROE que lo justifique.
+
+        Los cortes automáticos (+12% / -8% ROE) quedan fuera de la banda y no se bloquean.
+        """
+        exit_cfg = self.config.get("exit_rules", {})
+        min_hold_cycles = int(exit_cfg.get("min_hold_cycles", 0))
+        if min_hold_cycles <= 0:
+            return []
+        band = float(exit_cfg.get("min_hold_roe_band_pct", 4.0))
+        roe = getattr(snap_position, "roe_pct", None)
+        if roe is None or abs(roe) >= band:
+            return []
+
+        db_pos = (
+            self.db.query(Position)
+            .filter(
+                Position.portfolio_id == portfolio_id,
+                Position.symbol == proposal.symbol,
+                Position.is_open == True,  # noqa: E712
+                Position.instrument_type == "perpetual",
+            )
+            .order_by(Position.opened_at.desc())
+            .first()
+        )
+        if db_pos is None or db_pos.opened_at is None:
+            return []
+
+        interval = get_profile_ai_cycle_interval(self.profile)
+        min_age = timedelta(minutes=interval * min_hold_cycles)
+        age = app_now() - db_pos.opened_at
+        if age >= min_age:
+            return []
+        return [
+            f"Min hold: {proposal.symbol} open {int(age.total_seconds() // 60)} min "
+            f"< {min_hold_cycles} cycles ({interval * min_hold_cycles} min) with ROE "
+            f"{roe:+.1f}% in ±{band:.0f}% band — hold or wait for SL/TP"
+        ]
 
     def _validate_stock(
         self,
@@ -388,8 +474,12 @@ class RiskManager:
     ) -> list[str]:
         exit_cfg = self.config.get("exit_rules", {})
         cooldown_cycles = int(exit_cfg.get("reentry_cooldown_cycles", 2))
+        loss_cooldown_cycles = int(
+            exit_cfg.get("reentry_cooldown_after_loss_cycles", cooldown_cycles)
+        )
         interval = get_profile_ai_cycle_interval(self.profile)
-        since = app_now() - timedelta(minutes=interval * cooldown_cycles)
+        max_cycles = max(cooldown_cycles, loss_cooldown_cycles)
+        since = app_now() - timedelta(minutes=interval * max_cycles)
 
         last_close = (
             self.db.query(Trade)
@@ -406,9 +496,17 @@ class RiskManager:
             return []
         if last_close.position_side != proposal.position_side:
             return []
+
+        was_loss = (last_close.realized_pnl_usdt or 0.0) < 0
+        applicable = loss_cooldown_cycles if was_loss else cooldown_cycles
+        cutoff = app_now() - timedelta(minutes=interval * applicable)
+        if last_close.executed_at < cutoff:
+            return []
+
+        label = " after loss" if was_loss else ""
         return [
-            f"Re-entry cooldown: {proposal.symbol} {proposal.position_side} closed within "
-            f"{cooldown_cycles} cycles ({interval * cooldown_cycles} min)"
+            f"Re-entry cooldown{label}: {proposal.symbol} {proposal.position_side} closed within "
+            f"{applicable} cycles ({interval * applicable} min)"
         ]
 
     def _check_rotation_edge(
@@ -533,7 +631,10 @@ class RiskManager:
 
         min_tp = float(stops_cfg.get("min_take_profit_pct", 1.0))
         if is_perp:
-            min_tp = min(min_tp, float(stops_cfg.get("min_take_profit_pct_perp", 0.35)))
+            min_tp = float(stops_cfg.get("min_take_profit_pct_perp", 1.0))
+            target_tp = float(stops_cfg.get("target_take_profit_pct_perp", 1.2))
+            if proposal.take_profit_pct < min_tp:
+                proposal.take_profit_pct = target_tp
         if proposal.take_profit_pct < min_tp:
             reasons.append(f"Take-profit below minimum ({min_tp}%)")
 
@@ -547,8 +648,11 @@ class RiskManager:
         opt = self.config.get("profit_optimization", {})
         fee_multiplier = float(opt.get("min_tp_fee_multiplier", 2.0))
         round_trip_pct = (fee_rate * 2) * 100
-        margin_pct = 0.25 if is_perp else 0.5
-        min_net_gain_pct = round_trip_pct * fee_multiplier + margin_pct
+        if is_perp:
+            perp_floor = float(stops_cfg.get("min_take_profit_pct_perp", 0.35))
+            min_net_gain_pct = max(perp_floor, round_trip_pct * fee_multiplier)
+        else:
+            min_net_gain_pct = round_trip_pct * fee_multiplier + 0.5
         if proposal.take_profit_pct < min_net_gain_pct:
             reasons.append(
                 f"Take-profit {proposal.take_profit_pct:.2f}% below minimum net edge "
@@ -557,8 +661,6 @@ class RiskManager:
 
         reasons.extend(self._check_loss_limits(portfolio, limits_cfg))
         reasons.extend(self._check_trade_count_limits(limits_cfg, portfolio.portfolio_id))
-        if is_perp:
-            reasons.extend(self._check_stop_loss_vs_leverage(proposal))
         return reasons
 
     def _extreme_all_in_margin(

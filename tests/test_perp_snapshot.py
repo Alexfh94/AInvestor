@@ -121,7 +121,7 @@ def test_risk_perp_validates_margin_not_notional(db_session):
         symbol="SOL/USDT",
         amount_pct=100.0,
         stop_loss_pct=10.0,
-        take_profit_pct=1.5,
+        take_profit_pct=1.2,
         conviction=80,
         instrument_type=InstrumentType.PERPETUAL,
         position_side="long",

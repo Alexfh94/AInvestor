@@ -17,6 +17,11 @@ def _exit_cfg(profile: str) -> dict:
     return load_risk_config(profile=profile).get("exit_rules", {})
 
 
+def _target_tp_pct(profile: str) -> float:
+    stops = load_risk_config(profile=profile).get("stops", {})
+    return float(stops.get("target_take_profit_pct_perp", 1.2))
+
+
 def position_trend_aligned(side: str, signal: TechnicalSignal | None) -> bool:
     """True si la tendencia 1h apoya la dirección de la posición."""
     if signal is None:
@@ -35,11 +40,16 @@ def mandatory_close_proposals(
     quant_map: dict[str, int],
     profile: str,
 ) -> list[TradeProposal]:
-    """Genera cierres obligatorios antes del ciclo IA (ROE + alineación / convicción)."""
+    """
+    Cierres obligatorios antes del ciclo IA.
+
+    - Beneficio: ROE >= take_profit_roe_pct (12% ≈ 10% neto tras fees a 10x).
+    - Pérdida: ROE <= stop_loss_roe_pct — corte incondicional (sin depender de quant).
+    """
     cfg = _exit_cfg(profile)
     profit_roe = float(cfg.get("take_profit_roe_pct", 12.0))
-    loss_roe = float(cfg.get("stop_loss_roe_pct", -5.0))
-    loss_min_quant = int(cfg.get("loss_exit_max_quant_conviction", 40))
+    loss_roe = float(cfg.get("stop_loss_roe_pct", -8.0))
+    target_tp = _target_tp_pct(profile)
 
     proposals: list[TradeProposal] = []
     for pos in snapshot.positions:
@@ -50,17 +60,18 @@ def mandatory_close_proposals(
             continue
 
         side = getattr(pos, "position_side", "long") or "long"
-        signal = signals.get(pos.symbol)
-        quant = quant_map.get(pos.symbol, 50)
+        lev = getattr(pos, "leverage", 10) or 10
 
         reason = ""
-        if roe >= profit_roe and not position_trend_aligned(side, signal):
+        if roe >= profit_roe:
             reason = (
-                f"ROE {roe:+.1f}% con tendencia 1h desalineada — cierre obligatorio de beneficio"
+                f"ROE {roe:+.1f}% ≥ objetivo {profit_roe:.0f}% "
+                f"(~10% neto tras fees a 10x) — take profit obligatorio"
             )
-        elif roe <= loss_roe and quant < loss_min_quant:
+        elif roe <= loss_roe:
             reason = (
-                f"ROE {roe:+.1f}% y convicción quant {quant} < {loss_min_quant} — corte de pérdida"
+                f"ROE {roe:+.1f}% ≤ stop {loss_roe:.0f}% ROE "
+                f"— corte de pérdida automático"
             )
 
         if not reason:
@@ -72,16 +83,46 @@ def mandatory_close_proposals(
                 action=action,
                 symbol=pos.symbol,
                 amount_pct=100.0,
-                stop_loss_pct=10.0,
-                take_profit_pct=1.0,
+                stop_loss_pct=abs(loss_roe) / lev,
+                take_profit_pct=target_tp,
                 conviction=90,
                 reasoning=reason,
                 instrument_type=InstrumentType.PERPETUAL,
                 position_side=side,
-                leverage=getattr(pos, "leverage", 10) or 10,
+                leverage=lev,
             )
         )
     return proposals
+
+
+def roe_take_profit_triggers(
+    snapshot: PortfolioSnapshot,
+    profile: str,
+) -> list[tuple[str, float]]:
+    """Símbolos con ROE >= objetivo para cierre en risk monitor (entre ciclos IA)."""
+    profit_roe = float(_exit_cfg(profile).get("take_profit_roe_pct", 12.0))
+    triggers: list[tuple[str, float]] = []
+    for pos in snapshot.positions:
+        if getattr(pos, "instrument_type", "spot") != "perpetual":
+            continue
+        if pos.roe_pct is not None and pos.roe_pct >= profit_roe:
+            triggers.append((pos.symbol, pos.current_price))
+    return triggers
+
+
+def roe_stop_loss_triggers(
+    snapshot: PortfolioSnapshot,
+    profile: str,
+) -> list[tuple[str, float]]:
+    """Símbolos con ROE <= stop para corte en risk monitor (entre ciclos IA)."""
+    loss_roe = float(_exit_cfg(profile).get("stop_loss_roe_pct", -8.0))
+    triggers: list[tuple[str, float]] = []
+    for pos in snapshot.positions:
+        if getattr(pos, "instrument_type", "spot") != "perpetual":
+            continue
+        if pos.roe_pct is not None and pos.roe_pct <= loss_roe:
+            triggers.append((pos.symbol, pos.current_price))
+    return triggers
 
 
 def update_trailing_stops(
@@ -94,8 +135,8 @@ def update_trailing_stops(
     Devuelve número de posiciones actualizadas.
     """
     cfg = _exit_cfg(profile)
-    activate_roe = float(cfg.get("trailing_activate_roe_pct", 5.0))
-    trail_roe = float(cfg.get("trailing_distance_roe_pct", 3.0))
+    activate_roe = float(cfg.get("trailing_activate_roe_pct", 8.0))
+    trail_roe = float(cfg.get("trailing_distance_roe_pct", 4.0))
 
     updated = 0
     for pos in positions:

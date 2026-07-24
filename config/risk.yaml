@@ -12,7 +12,8 @@ stops:
   require_take_profit: true
   max_stop_loss_pct: 15.0
   min_take_profit_pct: 1.0
-  min_take_profit_pct_perp: 0.35
+  min_take_profit_pct_perp: 1.0
+  target_take_profit_pct_perp: 1.2
   max_take_profit_pct_perp: 1.5
   use_atr_suggestions: true
 
@@ -22,11 +23,13 @@ profit_optimization:
 
 exit_rules:
   take_profit_roe_pct: 12.0
-  stop_loss_roe_pct: -5.0
-  loss_exit_max_quant_conviction: 40
-  trailing_activate_roe_pct: 5.0
-  trailing_distance_roe_pct: 3.0
+  stop_loss_roe_pct: -8.0
+  trailing_activate_roe_pct: 8.0
+  trailing_distance_roe_pct: 4.0
   reentry_cooldown_cycles: 2
+  reentry_cooldown_after_loss_cycles: 8
+  min_hold_cycles: 2
+  min_hold_roe_band_pct: 4.0
   rotation_min_conviction_delta: 15
   rotation_min_roe_cost_pct: 2.0
 
@@ -75,12 +78,12 @@ profiles:
       max_daily_loss_pct: 100.0
       max_weekly_loss_pct: 100.0
       max_drawdown_pct: 100.0
-      max_trades_per_day: 40
+      max_trades_per_day: 12
     ai_validation:
       conviction_divergence_threshold: 60
       min_conviction_on_divergence: 45
       min_conviction: 60
-      min_quant_conviction_entry: 55
+      min_quant_conviction_entry: 60
     whitelist:
       pairs:
         - BTC/USDT
