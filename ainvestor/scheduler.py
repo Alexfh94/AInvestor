@@ -47,10 +47,16 @@ async def _run_market_collect():
         from ainvestor.collectors.market import MarketCollector
         from ainvestor.portfolio.manager import PortfolioManager
         from ainvestor.services.charts import record_portfolio_value_async
+        from ainvestor.services.market_context_cache import refresh_signals_cache
 
         collector = MarketCollector(db)
         tickers = await collector.collect_all()
-        logger.info("Collected %d market snapshots", len(tickers))
+        signal_count = await refresh_signals_cache(db)
+        logger.info(
+            "Collected %d market snapshots, %d technical signals",
+            len(tickers),
+            signal_count,
+        )
 
         prices = {t.symbol: t.last for t in tickers}
         for profile in PROFILES:
