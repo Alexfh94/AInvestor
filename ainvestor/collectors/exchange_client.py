@@ -126,12 +126,22 @@ class ExchangeClient:
     async def load_markets(self) -> dict[str, Any]:
         return await asyncio.to_thread(self.exchange.load_markets)
 
-    async def get_taker_fee_rate(self, symbol: str) -> float:
-        """Comisión taker del exchange para el par (órdenes market)."""
+    async def get_taker_fee_rate(
+        self, symbol: str, instrument_type: str = "spot"
+    ) -> float:
+        """Comisión taker del exchange para el par (órdenes market).
+
+        Para perpetuos usa la tarifa de futuros USDT-M configurada (Binance VIP0:
+        0.05% taker) — el lookup ccxt de mercados spot devolvería 0.1% (el doble).
+        """
         settings = get_settings()
         from ainvestor.config import load_risk_config
 
-        fallback = load_risk_config().get("fees", {}).get("fallback_taker_rate", 0.001)
+        fees_cfg = load_risk_config().get("fees", {})
+        if instrument_type == "perpetual":
+            return float(fees_cfg.get("perp_taker_rate", 0.0005))
+
+        fallback = fees_cfg.get("fallback_taker_rate", 0.001)
 
         try:
             await self.load_markets()

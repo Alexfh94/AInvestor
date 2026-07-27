@@ -5,6 +5,8 @@ version: "5.0"
 fees:
   exchange: binance
   fallback_taker_rate: 0.001
+  # Binance USDT-M futures VIP0 taker (spot lookup devolvería 0.1%, el doble)
+  perp_taker_rate: 0.0005
   all_in_reserve_pct: 0.1
 
 stops:
@@ -26,11 +28,12 @@ exit_rules:
   stop_loss_roe_pct: -8.0
   trailing_activate_roe_pct: 8.0
   trailing_distance_roe_pct: 4.0
-  reentry_cooldown_cycles: 2
+  reentry_cooldown_cycles: 4
   reentry_cooldown_after_loss_cycles: 8
-  min_hold_cycles: 2
-  min_hold_roe_band_pct: 4.0
-  rotation_min_conviction_delta: 15
+  min_hold_cycles: 8
+  min_hold_roe_min_pct: -4.0
+  min_hold_roe_max_pct: 8.0
+  rotation_min_conviction_delta: 25
   rotation_min_roe_cost_pct: 2.0
 
 allocation:
@@ -78,7 +81,7 @@ profiles:
       max_daily_loss_pct: 100.0
       max_weekly_loss_pct: 100.0
       max_drawdown_pct: 100.0
-      max_trades_per_day: 12
+      max_trades_per_day: 8
     ai_validation:
       conviction_divergence_threshold: 60
       min_conviction_on_divergence: 45

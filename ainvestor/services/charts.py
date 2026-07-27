@@ -28,6 +28,9 @@ def record_portfolio_value(
 async def record_portfolio_value_async(
     db: Session, mgr: PortfolioManager, prices: dict[str, float]
 ) -> None:
+    # Descarta estado cacheado de la sesión: otra sesión (ciclo IA) puede haber
+    # abierto/cerrado posiciones y un portfolio obsoleto duplicaría margen+balance.
+    db.expire_all()
     snapshot = await mgr.get_snapshot(prices)
     portfolio = mgr.get_or_create_portfolio()
     db.add(

@@ -200,23 +200,25 @@ PROFILE_PROMPT_INSTRUCTIONS = {
         "ALL-IN rule: every open and close uses amount_pct=100 (full margin in or full position out). "
         "Maximum ONE open position at a time — if a position is open, only HOLD, close at 100%, or rotate. "
         "Leverage 10x always. "
-        "Take-profit MUST be 1.2% on price (= 12% ROE at 10x ≈ 10% net profit after ~2% round-trip fees on margin). "
+        "Take-profit MUST be 1.2% on price (= 12% ROE at 10x ≈ 11% net profit after ~1% round-trip fees on margin). "
         "Stop-loss is AUTOMATIC at -8% ROE (0.8% price at 10x), monitored every 2 min — "
         "losses never run past -8% ROE, so pick entries worth that risk. "
-        "Fees: ~0.10% taker per side (0.20% round-trip on notional = ~2% of margin at 10x); "
-        "every open+close burns ~2% of margin — do NOT churn. "
+        "Fees: 0.05% taker per side on notional (Binance USDT-M futures) = ~1% of margin round-trip at 10x. "
         "ENTRY RULES (hard-enforced by risk gate): conviction ≥ 60, quant conviction ≥ 60, "
         "direction must NOT contradict the 4h trend (no longs in 4h bearish, no shorts in 4h bullish), "
         "and 1h ATR must make a 1.2% move plausible (ATR×3 ≥ 1.2%). If no setup meets all rules, stay in cash. "
-        "Do NOT re-open a symbol+side that just closed (cooldown 30 min; 2h if it closed at a loss). "
-        "Do NOT close a position younger than 2 cycles while ROE is between -4% and +4% "
-        "(the auto-SL covers the downside; early flip-flops only burn fees). "
-        "When IN LOSS between 0% and -8% ROE: HOLD only if quant + trend still support your direction; "
+        "Do NOT re-open a symbol+side that just closed (cooldown 1h; 2h if it closed at a loss). "
+        "HOLDING RULE (hard-enforced): you CANNOT close a position younger than 2h while its ROE is "
+        "between -4% and +8% — let winners run to the trailing stop (+8% ROE) or TP (+12% ROE). "
+        "Closing a winner early to rotate costs ~1% fees plus the winner's remaining upside — "
+        "historically negative EV in this system (e.g. closed ETH at +0.3% to open LINK that lost -11.7%). "
+        "When IN LOSS between -4% and -8% ROE: HOLD only if quant + trend still support your direction; "
         "otherwise CLOSE at 100% — do not hope without signal backing. "
         "System auto-closes at +12% ROE (take profit) and at -8% ROE (stop) regardless of signals. "
-        "Do NOT rotate unless new setup conviction is ≥15 pts above current position's quant. "
+        "Do NOT rotate unless new setup conviction is ≥25 pts above current position's quant. "
+        "Daily cap: 8 trades (4 round trips) — treat each open as scarce; only A+ setups. "
         "Best historical setups: strong-trend continuation aligned with 4h+1d; "
-        "worst: counter-trend entries and range-bound chop."
+        "worst: counter-trend entries, range-bound chop, and early rotations out of winners."
     ),
 }
 
@@ -249,6 +251,9 @@ def build_cycle_prompt(
     pos = risk_config["position"]
     fees = risk_config.get("fees", {})
     fee_rate = float(fees.get("fallback_taker_rate", 0.001))
+    if prof == "extreme":
+        # Perfil solo-perpetuos: tarifa taker de futuros USDT-M, no la de spot
+        fee_rate = float(fees.get("perp_taker_rate", 0.0005))
     exchange = fees.get("exchange", "binance")
     deriv = risk_config.get("derivatives", {})
 

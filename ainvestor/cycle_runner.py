@@ -170,7 +170,9 @@ class CycleRunner:
                     rejected_proposals.append((proposal, ["Precio no disponible"]))
                     continue
 
-                fee_rate = await self.market.client.get_taker_fee_rate(proposal.symbol)
+                fee_rate = await self.market.client.get_taker_fee_rate(
+                    proposal.symbol, proposal.instrument_type.value
+                )
 
                 funding_rate = 0.0
                 deriv = deriv_by_symbol.get(proposal.symbol)
@@ -373,7 +375,9 @@ class CycleRunner:
             price = prices.get(proposal.symbol, 0)
             if price <= 0:
                 continue
-            fee_rate = await self.market.client.get_taker_fee_rate(proposal.symbol)
+            fee_rate = await self.market.client.get_taker_fee_rate(
+                proposal.symbol, proposal.instrument_type.value
+            )
             check = self.risk.validate_proposal(
                 proposal,
                 snapshot,

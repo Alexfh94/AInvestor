@@ -76,7 +76,7 @@ class TradeExecutor:
         portfolio = self.portfolio_mgr.get_or_create_portfolio()
         simulator = PerpPaperSimulator(self.db, portfolio)
         client = ExchangeClient()
-        fee_rate = await client.get_taker_fee_rate(proposal.symbol)
+        fee_rate = await client.get_taker_fee_rate(proposal.symbol, "perpetual")
 
         margin: float | None = None
         opening_fee: float | None = None

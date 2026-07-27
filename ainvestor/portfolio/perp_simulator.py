@@ -24,7 +24,12 @@ class PerpPaperSimulator:
         self.db = db
         self.portfolio = portfolio
         profile = getattr(portfolio, "profile", None) or "extreme"
-        self.config = load_risk_config(profile=profile).get("derivatives", {})
+        risk_cfg = load_risk_config(profile=profile)
+        self.config = risk_cfg.get("derivatives", {})
+        # Tarifa taker de futuros USDT-M (Binance VIP0 0.05%), no la de spot (0.1%)
+        self.perp_fee_rate = float(
+            risk_cfg.get("fees", {}).get("perp_taker_rate", 0.0005)
+        )
 
     def open_position(
         self,
@@ -36,10 +41,11 @@ class PerpPaperSimulator:
         stop_loss: float | None,
         take_profit: float | None,
         cycle_id: str | None = None,
-        fee_rate: float = 0.001,
+        fee_rate: float | None = None,
         margin_used: float | None = None,
         opening_fee: float | None = None,
     ) -> Trade | None:
+        fee_rate = self.perp_fee_rate if fee_rate is None else fee_rate
         leverage = min(leverage, int(self.config.get("max_leverage", 2)))
 
         if margin_used is not None and opening_fee is not None:
@@ -114,8 +120,9 @@ class PerpPaperSimulator:
         price: float,
         close_pct: float = 100.0,
         cycle_id: str | None = None,
-        fee_rate: float = 0.001,
+        fee_rate: float | None = None,
     ) -> Trade | None:
+        fee_rate = self.perp_fee_rate if fee_rate is None else fee_rate
         close_amount = position.amount * (close_pct / 100)
         if close_amount <= 0:
             return None

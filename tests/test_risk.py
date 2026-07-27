@@ -363,7 +363,7 @@ def test_perp_open_blocked_when_atr_too_low_for_tp(db_session):
     assert any("ATR" in r for r in result.rejection_reasons)
 
 
-def test_perp_close_blocked_by_min_hold_in_roe_band(db_session):
+def _min_hold_setup(db_session, roe: float):
     from ainvestor.db.models import Position
 
     portfolio = db_session.query(Portfolio).first()
@@ -382,7 +382,6 @@ def test_perp_close_blocked_by_min_hold_in_roe_band(db_session):
     )
     db_session.commit()
 
-    risk = RiskManager(db_session, profile=PROFILE_EXTREME)
     close_proposal = TradeProposal(
         action=DecisionAction.SELL,
         symbol="ETH/USDT",
@@ -402,21 +401,59 @@ def test_perp_close_blocked_by_min_hold_in_roe_band(db_session):
                 asset="ETH",
                 amount=1.0,
                 entry_price=3000.0,
-                current_price=3003.0,
+                current_price=3000.0 * (1 + roe / 1000),
                 value_usdt=100.0,
                 pct_of_portfolio=100.0,
-                unrealized_pnl=1.0,
+                unrealized_pnl=roe,
                 instrument_type="perpetual",
                 position_side="long",
                 leverage=10,
                 margin_used=100.0,
                 notional_usdt=1000.0,
-                roe_pct=1.0,
+                roe_pct=roe,
             )
         ],
     )
+    return close_proposal, snapshot
+
+
+def test_perp_close_blocked_by_min_hold_in_roe_band(db_session):
+    risk = RiskManager(db_session, profile=PROFILE_EXTREME)
+    proposal, snapshot = _min_hold_setup(db_session, roe=1.0)
     result = risk.validate_proposal(
-        close_proposal, snapshot, current_price=3003.0, derivatives_available=True
+        proposal, snapshot, current_price=3003.0, derivatives_available=True
     )
     assert result.approved is False
     assert any("Min hold" in r for r in result.rejection_reasons)
+
+
+def test_perp_close_blocked_by_min_hold_on_early_winner(db_session):
+    """ROE +7 sigue en banda [-4, +8): no se corta un ganador antes del trailing."""
+    risk = RiskManager(db_session, profile=PROFILE_EXTREME)
+    proposal, snapshot = _min_hold_setup(db_session, roe=7.0)
+    result = risk.validate_proposal(
+        proposal, snapshot, current_price=3021.0, derivatives_available=True
+    )
+    assert result.approved is False
+    assert any("Min hold" in r for r in result.rejection_reasons)
+
+
+def test_perp_close_allowed_below_band_when_thesis_broken(db_session):
+    """ROE -5 (< -4): la IA puede cortar aunque la posición sea joven."""
+    risk = RiskManager(db_session, profile=PROFILE_EXTREME)
+    proposal, snapshot = _min_hold_setup(db_session, roe=-5.0)
+    result = risk.validate_proposal(
+        proposal, snapshot, current_price=2985.0, derivatives_available=True
+    )
+    assert result.approved is True
+
+
+def test_perp_fee_rate_uses_futures_rate():
+    """get_taker_fee_rate para perpetuos devuelve la tarifa de futuros (0.05%), no spot."""
+    import asyncio
+
+    from ainvestor.collectors.exchange_client import ExchangeClient
+
+    client = ExchangeClient()
+    rate = asyncio.run(client.get_taker_fee_rate("BTC/USDT", "perpetual"))
+    assert rate == pytest.approx(0.0005)

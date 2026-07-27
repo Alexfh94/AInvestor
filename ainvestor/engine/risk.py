@@ -381,17 +381,20 @@ class RiskManager:
     def _check_min_hold(
         self, proposal: TradeProposal, snap_position, portfolio_id: int
     ) -> list[str]:
-        """Anti-churn: bloquea cierres discrecionales muy tempranos sin ROE que lo justifique.
+        """Anti-churn: bloquea cierres discrecionales tempranos con ROE en [-4%, +8%).
 
-        Los cortes automáticos (+12% / -8% ROE) quedan fuera de la banda y no se bloquean.
+        Banda asimétrica: por debajo de -4% la IA puede cortar (tesis rota); por
+        encima de +8% actúan trailing y TP. Los cortes automáticos (+12% / -8% ROE)
+        quedan fuera de la banda y no se bloquean.
         """
         exit_cfg = self.config.get("exit_rules", {})
         min_hold_cycles = int(exit_cfg.get("min_hold_cycles", 0))
         if min_hold_cycles <= 0:
             return []
-        band = float(exit_cfg.get("min_hold_roe_band_pct", 4.0))
+        roe_min = float(exit_cfg.get("min_hold_roe_min_pct", -4.0))
+        roe_max = float(exit_cfg.get("min_hold_roe_max_pct", 8.0))
         roe = getattr(snap_position, "roe_pct", None)
-        if roe is None or abs(roe) >= band:
+        if roe is None or roe < roe_min or roe >= roe_max:
             return []
 
         db_pos = (
@@ -416,7 +419,7 @@ class RiskManager:
         return [
             f"Min hold: {proposal.symbol} open {int(age.total_seconds() // 60)} min "
             f"< {min_hold_cycles} cycles ({interval * min_hold_cycles} min) with ROE "
-            f"{roe:+.1f}% in ±{band:.0f}% band — hold or wait for SL/TP"
+            f"{roe:+.1f}% in [{roe_min:.0f}%, {roe_max:.0f}%) band — hold or wait for SL/TP/trailing"
         ]
 
     def _validate_stock(
