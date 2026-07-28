@@ -292,10 +292,6 @@
         </div>
     </div>
 
-    <div class="card" style="margin-top: 1.5rem;">
-        <h2>Aprendizaje — historial evaluado</h2>
-        <div id="learning-panel"><p class="muted">Cargando…</p></div>
-    </div>
     </div>
 
     <div id="panel-charts" class="panel">
@@ -430,7 +426,6 @@
                 }
                 if (data.trades) renderTrades(data.trades);
                 if (data.decisions) renderDecisions(data.decisions);
-                if (data.learning) renderLearning(data.learning);
                 if (data.token_usage) {
                     const el = document.getElementById('token-usage-bar');
                     if (el) {
@@ -453,7 +448,6 @@
                     loadPortfolio(),
                     loadTrades(),
                     loadDecisions(),
-                    loadLearning(),
                     loadTokenUsage(),
                     loadMarketContext(),
                 ]);
@@ -549,22 +543,15 @@
 
         async function loadTrades() {
             try {
-                const r = await fetch(`/api/trades?limit=10&${profileQuery()}`);
+                const r = await fetch(`/api/trades?limit=5&${profileQuery()}`);
                 renderTrades(await r.json());
             } catch (e) {}
         }
 
         async function loadDecisions() {
             try {
-                const r = await fetch(`/api/decisions?limit=10&${profileQuery()}`);
+                const r = await fetch(`/api/decisions?limit=5&${profileQuery()}`);
                 renderDecisions(await r.json());
-            } catch (e) {}
-        }
-
-        async function loadLearning() {
-            try {
-                const r = await fetch(`/api/learning?${profileQuery()}`);
-                renderLearning(await r.json());
             } catch (e) {}
         }
 
@@ -858,44 +845,11 @@
             }).join('') + '</tbody></table>');
         }
 
-        function renderLearning(data) {
-            const el = document.getElementById('learning-panel');
-            const s = data.stats || {};
-            const evaluated = s.evaluated || 0;
-            let statsHtml = '<div style="display:flex;flex-wrap:wrap;gap:1rem;margin-bottom:0.75rem">';
-            if (evaluated > 0) {
-                statsHtml += `<span><strong class="outcome-good">${s.good || 0}</strong> correctas (${s.good_pct ?? 0}%)</span>`;
-                statsHtml += `<span><strong class="outcome-neutral">${s.neutral || 0}</strong> neutrales (${s.neutral_pct ?? 0}%)</span>`;
-                statsHtml += `<span><strong class="outcome-bad">${s.bad || 0}</strong> incorrectas (${s.bad_pct ?? 0}%)</span>`;
-                statsHtml += `<span class="muted">— ${evaluated} evaluadas de ${s.total_records || 0} total, ${s.pending_evaluation || 0} pendientes</span>`;
-            } else {
-                statsHtml += `<span class="muted">Sin evaluaciones aún (${s.pending_evaluation || 0} pendientes)</span>`;
-            }
-            statsHtml += '</div>';
-            let html = statsHtml;
-            html += `<pre style="white-space:pre-wrap;font-size:0.85rem;color:var(--muted);margin-bottom:1rem">${data.summary || ''}</pre>`;
-            if (data.recent && data.recent.length) {
-                let tbl = '<table><thead><tr><th>Fecha</th><th>Acción</th><th>Activo</th><th>Estado</th><th>Resultado</th><th>Notas</th></tr></thead><tbody>';
-                tbl += data.recent.map(r => `<tr>
-                    <td>${fmtDate(r.created_at)}</td>
-                    <td>${r.action.toUpperCase()}</td>
-                    <td>${r.symbol || '—'}</td>
-                    <td>${r.execution_status}</td>
-                    <td>${outcomeBadge(r.outcome)}${r.return_pct != null ? ' ' + (r.return_pct >= 0 ? '+' : '') + fmt(r.return_pct, 1) + '%' : ''}</td>
-                    <td class="summary-text">${r.notes || r.reasoning || r.summary || '—'}</td>
-                </tr>`).join('');
-                tbl += '</tbody></table>';
-                html += tableScroll(tbl);
-            }
-            el.innerHTML = html;
-        }
-
         refreshAll();
 
         setInterval(() => { loadPortfolio(); }, 120000);
         setInterval(loadTrades, 120000);
         setInterval(loadDecisions, 60000);
-        setInterval(loadLearning, 120000);
         setInterval(loadTokenUsage, 120000);
     </script>
 </body>

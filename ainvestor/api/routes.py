@@ -351,9 +351,8 @@ async def get_dashboard(
     from ainvestor.services.market_context_cache import get_market_context
 
     portfolio = await get_portfolio(db=db, profile=profile)
-    trades = await get_trades(limit=10, db=db, profile=profile)
-    decisions = await get_decisions(limit=10, db=db, profile=profile)
-    learning = await get_learning(db=db, profile=profile)
+    trades = await get_trades(limit=5, db=db, profile=profile)
+    decisions = await get_decisions(limit=5, db=db, profile=profile)
     token_usage = await get_ai_usage(db=db, profile=profile)
     market_context = await get_market_context(db, fresh=False)
     return {
@@ -361,7 +360,6 @@ async def get_dashboard(
         "portfolio": portfolio,
         "trades": trades,
         "decisions": decisions,
-        "learning": learning,
         "token_usage": token_usage,
         "market_context": market_context,
     }
