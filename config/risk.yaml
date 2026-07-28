@@ -81,7 +81,7 @@ profiles:
       max_daily_loss_pct: 100.0
       max_weekly_loss_pct: 100.0
       max_drawdown_pct: 100.0
-      max_trades_per_day: 8
+      max_trades_per_day: 40
     ai_validation:
       conviction_divergence_threshold: 60
       min_conviction_on_divergence: 45

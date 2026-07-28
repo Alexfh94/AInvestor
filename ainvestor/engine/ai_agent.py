@@ -216,7 +216,6 @@ PROFILE_PROMPT_INSTRUCTIONS = {
         "otherwise CLOSE at 100% — do not hope without signal backing. "
         "System auto-closes at +12% ROE (take profit) and at -8% ROE (stop) regardless of signals. "
         "Do NOT rotate unless new setup conviction is ≥25 pts above current position's quant. "
-        "Daily cap: 8 trades (4 round trips) — treat each open as scarce; only A+ setups. "
         "Best historical setups: strong-trend continuation aligned with 4h+1d; "
         "worst: counter-trend entries, range-bound chop, and early rotations out of winners."
     ),

@@ -729,14 +729,22 @@ class RiskManager:
         return self._get_initial_from_snapshot(portfolio)
 
     def _check_trade_count_limits(self, limits_cfg: dict, portfolio_id: int) -> list[str]:
+        """Techo de seguridad ante bucles: solo cuenta aperturas, no cierres por TP/SL."""
         today = app_now().replace(hour=0, minute=0, second=0, microsecond=0)
         count = (
             self.db.query(func.count(Trade.id))
-            .filter(Trade.executed_at >= today, Trade.portfolio_id == portfolio_id)
+            .filter(
+                Trade.executed_at >= today,
+                Trade.portfolio_id == portfolio_id,
+                Trade.trade_action == "open",
+            )
             .scalar()
         ) or 0
         if count >= limits_cfg["max_trades_per_day"]:
-            return [f"Max trades per day ({limits_cfg['max_trades_per_day']}) reached"]
+            return [
+                f"Max opens per day ({limits_cfg['max_trades_per_day']}) reached "
+                f"(safety ceiling — quality gates unchanged)"
+            ]
         return []
 
     def _get_period_loss_pct(self, days: int, portfolio_id: int, initial: float) -> float:
