@@ -5,6 +5,7 @@ import json
 import logging
 from datetime import datetime, timedelta
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ainvestor.collectors.derivatives_store import DerivativesCollector
@@ -143,18 +144,23 @@ async def _ensure_signals(db: Session, ctx: dict) -> dict:
 
 
 def _tickers_from_snapshots(db: Session, limit: int = 12) -> list[dict]:
+    subq = (
+        db.query(
+            MarketSnapshot.symbol,
+            func.max(MarketSnapshot.id).label("max_id"),
+        )
+        .group_by(MarketSnapshot.symbol)
+        .subquery()
+    )
     rows = (
         db.query(MarketSnapshot)
-        .order_by(MarketSnapshot.captured_at.desc())
-        .limit(500)
+        .join(subq, MarketSnapshot.id == subq.c.max_id)
+        .order_by(MarketSnapshot.symbol)
+        .limit(limit)
         .all()
     )
-    seen: set[str] = set()
     tickers: list[dict] = []
     for row in rows:
-        if row.symbol in seen:
-            continue
-        seen.add(row.symbol)
         spread = None
         if row.bid and row.ask and row.last_price:
             spread = round((row.ask - row.bid) / row.last_price * 100, 4)
@@ -170,35 +176,36 @@ def _tickers_from_snapshots(db: Session, limit: int = 12) -> list[dict]:
                 "timestamp": row.captured_at.isoformat() if row.captured_at else None,
             }
         )
-        if len(tickers) >= limit:
-            break
     return tickers
 
 
-def _derivatives_from_db(db: Session) -> list[dict]:
+def _derivatives_from_db(db: Session, limit: int = 12) -> list[dict]:
+    subq = (
+        db.query(
+            DerivativesRecord.symbol,
+            func.max(DerivativesRecord.id).label("max_id"),
+        )
+        .group_by(DerivativesRecord.symbol)
+        .subquery()
+    )
     rows = (
         db.query(DerivativesRecord)
-        .order_by(DerivativesRecord.captured_at.desc())
-        .limit(200)
+        .join(subq, DerivativesRecord.id == subq.c.max_id)
+        .order_by(DerivativesRecord.symbol)
+        .limit(limit)
         .all()
     )
-    seen: set[str] = set()
-    out: list[dict] = []
-    for row in rows:
-        if row.symbol in seen:
-            continue
-        seen.add(row.symbol)
-        out.append(
-            {
-                "symbol": row.symbol,
-                "funding_rate": row.funding_rate,
-                "funding_rate_pct": row.funding_rate_pct,
-                "mark_price": row.mark_price,
-                "open_interest": row.open_interest,
-                "timestamp": row.captured_at.isoformat() if row.captured_at else None,
-            }
-        )
-    return out
+    return [
+        {
+            "symbol": row.symbol,
+            "funding_rate": row.funding_rate,
+            "funding_rate_pct": row.funding_rate_pct,
+            "mark_price": row.mark_price,
+            "open_interest": row.open_interest,
+            "timestamp": row.captured_at.isoformat() if row.captured_at else None,
+        }
+        for row in rows
+    ]
 
 
 def _sentiment_from_db(db: Session) -> dict:

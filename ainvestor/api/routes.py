@@ -57,7 +57,12 @@ async def get_portfolio(
     mgr = PortfolioManager(db, profile=profile)
     portfolio = mgr.get_or_create_portfolio()
     live_symbols = get_open_position_symbols(db, portfolio.id)
-    prices = await resolve_prices(db, live_symbols=live_symbols)
+    if live_symbols:
+        sym_list = list(live_symbols)
+        prices = await resolve_prices(db, symbols=sym_list, live_symbols=live_symbols)
+    else:
+        # Sin posiciones abiertas no hace falta precio de mercado (evita 10× API live).
+        prices = {}
     snapshot = await mgr.get_snapshot(prices)
     return snapshot.model_dump()
 
@@ -321,11 +326,18 @@ async def dex_status():
 async def get_market_context(
     db: Session = Depends(get_db),
     fresh: bool = Query(False, alias="fresh"),
+    slim: bool = Query(False, alias="slim"),
 ):
     """Latest market context from cache/DB; live collect only if stale or fresh=true."""
     from ainvestor.services.market_context_cache import get_market_context
 
-    return await get_market_context(db, fresh=fresh)
+    ctx = await get_market_context(db, fresh=fresh)
+    if slim:
+        ctx["tickers"] = (ctx.get("tickers") or [])[:8]
+        ctx["signals"] = (ctx.get("signals") or [])[:10]
+        ctx["derivatives"] = (ctx.get("derivatives") or [])[:10]
+        ctx["news"] = (ctx.get("news") or [])[:5]
+    return ctx
 
 
 @router.get("/portfolio/unified")
@@ -355,6 +367,10 @@ async def get_dashboard(
     decisions = await get_decisions(limit=5, db=db, profile=profile)
     token_usage = await get_ai_usage(db=db, profile=profile)
     market_context = await get_market_context(db, fresh=False)
+    market_context["tickers"] = (market_context.get("tickers") or [])[:8]
+    market_context["signals"] = (market_context.get("signals") or [])[:10]
+    market_context["derivatives"] = (market_context.get("derivatives") or [])[:10]
+    market_context["news"] = (market_context.get("news") or [])[:5]
     return {
         "profile": profile,
         "portfolio": portfolio,

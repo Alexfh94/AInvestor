@@ -4,7 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AInvestor Dashboard</title>
-    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
     <style>
         :root {
             --bg: #0f1419;
@@ -203,8 +202,6 @@
             .metric { font-size: 1.15rem; }
         }
     </style>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 </head>
 <body>
     <h1>AInvestor <span id="profile-badge" class="profile-badge extreme">Extrema</span></h1>
@@ -232,7 +229,7 @@
         <button class="secondary" onclick="toggleKillSwitch('off')">
             Desactivar kill switch
         </button>
-        <button class="secondary" onclick="refreshAll()">Actualizar</button>
+        <button class="secondary" onclick="refreshAll(true)">Actualizar</button>
         <span id="token-usage-bar"></span>
     </div>
 
@@ -329,9 +326,32 @@
         };
         let perfChart = null;
         let chartRefreshTimer = null;
+        let chartLibsLoaded = false;
+        let chartLibsLoading = null;
         let selectedProfile = 'extreme';
         let loadingDepth = 0;
         const PROFILE_LABELS = { extreme: 'Extrema' };
+
+        function loadScript(src) {
+            return new Promise((resolve, reject) => {
+                const s = document.createElement('script');
+                s.src = src;
+                s.onload = resolve;
+                s.onerror = reject;
+                document.head.appendChild(s);
+            });
+        }
+
+        async function ensureChartLibs() {
+            if (chartLibsLoaded) return;
+            if (!chartLibsLoading) {
+                chartLibsLoading = Promise.all([
+                    loadScript('https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js'),
+                    loadScript('https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js'),
+                ]).then(() => { chartLibsLoaded = true; });
+            }
+            await chartLibsLoading;
+        }
 
         function tableScroll(html) {
             return `<div class="table-scroll">${html}</div>`;
@@ -363,6 +383,7 @@
             try {
                 await refreshAll();
                 if (document.getElementById('panel-charts').classList.contains('active')) {
+                    await ensureChartLibs();
                     await loadChart();
                 }
             } finally {
@@ -403,60 +424,38 @@
             } catch (e) { console.error(e); }
         }
 
-        function switchTab(name) {
+        async function switchTab(name) {
             document.querySelectorAll('.tabs:not(.profile-tabs) .tab').forEach(t =>
                 t.classList.toggle('active', t.dataset.panel === name)
             );
             document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + name));
             if (name === 'charts') {
+                await ensureChartLibs();
                 loadChart();
                 if (!chartRefreshTimer) chartRefreshTimer = setInterval(loadChart, 60000);
             }
         }
 
-        async function refreshAll() {
+        async function refreshAll(showOverlay = false) {
+            if (showOverlay) setLoading(true, 'Actualizando…');
             try {
-                const r = await fetch(`/api/dashboard?${profileQuery()}`);
-                const data = await r.json();
-                if (data.portfolio) {
-                    renderMetrics(data.portfolio);
-                    renderAllocations(data.portfolio);
-                    renderDistribution(data.portfolio);
-                    renderPositions(data.portfolio);
-                }
-                if (data.trades) renderTrades(data.trades);
-                if (data.decisions) renderDecisions(data.decisions);
-                if (data.token_usage) {
-                    const el = document.getElementById('token-usage-bar');
-                    if (el) {
-                        const u = data.token_usage;
-                        el.innerHTML = `<span class="token-pill">IA: ${u.cycles} ciclos · `
-                            + `${(u.total_tokens || 0).toLocaleString('es-ES')} tokens `
-                            + `(in: ${(u.total_input_tokens || 0).toLocaleString('es-ES')}, `
-                            + `out: ${(u.total_output_tokens || 0).toLocaleString('es-ES')})</span>`;
-                    }
-                }
-                if (data.market_context) {
-                    renderMarketContext(data.market_context);
-                    renderSignals(data.market_context.signals || []);
-                    renderDerivatives(data.market_context.derivatives || []);
-                    renderNewsSentiment(data.market_context);
-                }
-            } catch (e) {
-                console.error(e);
+                await loadPortfolio();
                 await Promise.all([
-                    loadPortfolio(),
                     loadTrades(),
                     loadDecisions(),
                     loadTokenUsage(),
                     loadMarketContext(),
                 ]);
+            } catch (e) {
+                console.error(e);
+            } finally {
+                if (showOverlay) setLoading(false);
             }
         }
 
         async function loadMarketContext() {
             try {
-                const r = await fetch('/api/market/context');
+                const r = await fetch('/api/market/context?slim=true');
                 const data = await r.json();
                 renderMarketContext(data);
                 renderSignals(data.signals || []);
@@ -569,6 +568,7 @@
         }
 
         async function loadChart() {
+            await ensureChartLibs();
             const symbol = document.getElementById('chart-symbol').value;
             const hours = document.getElementById('chart-hours').value;
             try {
