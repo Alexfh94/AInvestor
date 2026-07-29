@@ -54,16 +54,24 @@ async def resolve_prices(
     stale_minutes: int = STALE_MINUTES,
 ) -> dict[str, float]:
     """
-    Prices for valuation: DB snapshots first; live batch fetch only for
-    open positions or symbols with stale/missing snapshots.
+    Prices for valuation: in-memory cache → DB snapshots → live batch fetch.
     """
+    from ainvestor.services.price_cache import get_prices as get_cached_prices
+
     symbol_list = symbols or get_all_market_pairs()
     live_symbols = live_symbols or set()
     prices, captured_at = get_latest_snapshot_prices(db, symbol_list)
+
+    cached = get_cached_prices(symbol_list)
+    for sym, price in cached.items():
+        prices[sym] = price
+
     cutoff = app_now() - timedelta(minutes=stale_minutes)
     need_live: set[str] = set()
 
     for sym in symbol_list:
+        if sym in cached:
+            continue
         if sym in live_symbols:
             need_live.add(sym)
             continue

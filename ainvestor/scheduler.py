@@ -5,10 +5,12 @@ import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
-from ainvestor.config import get_profile_ai_cycle_interval, get_settings
+from ainvestor.config import get_all_market_pairs, get_profile_ai_cycle_interval, get_settings
 from ainvestor.cycle_runner import CycleRunner
 from ainvestor.db.models import SessionLocal
 from ainvestor.portfolio.profiles import PROFILES
+from ainvestor.services.market_prices import get_open_position_symbols
+from ainvestor.services.price_cache import maybe_persist_snapshots, refresh_prices
 
 logger = logging.getLogger(__name__)
 
@@ -27,16 +29,55 @@ async def _run_ai_cycle_for_profile(profile: str):
         db.close()
 
 
+async def _run_price_tick():
+    """Refresh live prices and run SL/TP checks when positions are open."""
+    db = SessionLocal()
+    try:
+        open_syms = get_open_position_symbols(db)
+        symbols = list(set(get_all_market_pairs()) | open_syms)
+        await refresh_prices(symbols)
+        await maybe_persist_snapshots(db, symbols)
+
+        if not open_syms:
+            return
+
+        for profile in PROFILES:
+            runner = CycleRunner(db, profile=profile)
+            result = await runner.run_price_risk_check()
+            if result.get("stop_triggers") or result.get("liquidated"):
+                logger.warning("Price risk check (%s): %s", profile, result)
+    except Exception as e:
+        logger.exception("Price tick error: %s", e)
+    finally:
+        db.close()
+
+
 async def _run_risk_monitor():
+    """Drawdown / kill-switch check (lightweight, no exchange calls)."""
     db = SessionLocal()
     try:
         for profile in PROFILES:
             runner = CycleRunner(db, profile=profile)
-            result = await runner.run_risk_monitor()
-            if result.get("kill_switch") or result.get("stop_triggers"):
-                logger.warning("Risk monitor alert (%s): %s", profile, result)
+            result = await runner.run_drawdown_check()
+            if result.get("kill_switch"):
+                logger.warning("Drawdown check alert (%s): %s", profile, result)
     except Exception as e:
         logger.exception("Risk monitor error: %s", e)
+    finally:
+        db.close()
+
+
+async def _run_funding_check():
+    """Apply perp funding using derivatives data (slow path, infrequent)."""
+    db = SessionLocal()
+    try:
+        for profile in PROFILES:
+            runner = CycleRunner(db, profile=profile)
+            result = await runner.run_funding_check()
+            if result.get("funding_applied"):
+                logger.info("Funding applied (%s): %s", profile, result)
+    except Exception as e:
+        logger.exception("Funding check error: %s", e)
     finally:
         db.close()
 
@@ -122,9 +163,21 @@ def start_scheduler() -> AsyncIOScheduler:
         )
 
     _scheduler.add_job(
+        _run_price_tick,
+        IntervalTrigger(seconds=settings.price_tick_interval_seconds),
+        id="price_tick",
+        replace_existing=True,
+    )
+    _scheduler.add_job(
         _run_risk_monitor,
         IntervalTrigger(minutes=settings.risk_monitor_interval),
         id="risk_monitor",
+        replace_existing=True,
+    )
+    _scheduler.add_job(
+        _run_funding_check,
+        IntervalTrigger(minutes=settings.funding_check_interval_minutes),
+        id="funding_check",
         replace_existing=True,
     )
     _scheduler.add_job(
@@ -136,9 +189,11 @@ def start_scheduler() -> AsyncIOScheduler:
 
     _scheduler.start()
     logger.info(
-        "Scheduler started: AI cycles=%s, Risk=%dmin, Market=%dmin",
+        "Scheduler started: AI cycles=%s, PriceTick=%ds, Risk=%dmin, Funding=%dmin, Market=%dmin",
         ai_intervals,
+        settings.price_tick_interval_seconds,
         settings.risk_monitor_interval,
+        settings.funding_check_interval_minutes,
         settings.market_collect_interval,
     )
     return _scheduler

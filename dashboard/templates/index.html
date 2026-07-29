@@ -782,12 +782,13 @@
         function renderTrades(trades) {
             const el = document.getElementById('trades-table');
             if (!trades.length) { el.innerHTML = '<p class="muted">Sin operaciones</p>'; return; }
-            el.innerHTML = tableScroll(`<table><thead><tr><th>Par</th><th>Operación</th><th>Lev</th><th>Margen</th><th>PnL %</th><th>Neto</th><th>Comisión</th><th>Fecha</th></tr></thead><tbody>` +
+            el.innerHTML = tableScroll(`<table><thead><tr><th>Par</th><th>Operación</th><th>Motivo</th><th>Lev</th><th>Margen</th><th>PnL %</th><th>Neto</th><th>Comisión</th><th>Fecha</th></tr></thead><tbody>` +
                 trades.map(t => {
                     const op = t.operation_label || (t.trade_action === 'close' ? 'Cerrar' : 'Abrir');
                     const opCls = t.trade_action === 'close'
                         ? ((t.realized_pnl_usdt || 0) >= 0 ? 'positive' : 'negative')
                         : 'muted';
+                    const reason = t.close_reason_label || (t.trade_action === 'close' ? '—' : '');
                     const pnlPct = t.pnl_pct_roe != null
                         ? `<span class="${t.pnl_pct_roe >= 0 ? 'positive' : 'negative'}">${t.pnl_pct_roe >= 0 ? '+' : ''}${fmt(t.pnl_pct_roe, 2)}%</span>`
                         : '—';
@@ -798,6 +799,7 @@
                     return `<tr>
                     <td>${t.symbol}</td>
                     <td class="${opCls}"><strong>${op}</strong></td>
+                    <td class="muted" style="font-size:0.8rem">${reason}</td>
                     <td>${t.leverage || 1}x</td>
                     <td>${margin}</td>
                     <td>${pnlPct}</td>
@@ -847,10 +849,11 @@
 
         refreshAll();
 
-        setInterval(() => { loadPortfolio(); }, 120000);
-        setInterval(loadTrades, 120000);
+        setInterval(() => { loadPortfolio(); }, 5000);
+        setInterval(loadTrades, 30000);
         setInterval(loadDecisions, 60000);
         setInterval(loadTokenUsage, 120000);
+        setInterval(loadMarketContext, 60000);
     </script>
 </body>
 </html>

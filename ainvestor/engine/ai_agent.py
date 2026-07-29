@@ -96,7 +96,7 @@ CYCLE_PROMPT_TEMPLATE = """You are AInvestor, a multi-asset trading analysis age
 
 ## Execution cadence (plan trades with this in mind)
 - Your discretionary decisions (open / close / rotate / HOLD) run every **{ai_cycle_interval} minutes** only.
-- Stop-loss, take-profit and liquidation are checked automatically every **{risk_monitor_interval} minutes** (no new AI call).
+- Stop-loss, take-profit and liquidation are checked automatically every **{price_tick_interval} seconds** (no new AI call).
 - Between AI cycles you **cannot** change your mind: only SL/TP/liquidation can exit early.
 - If you open a position, assume you hold until the **next AI cycle** (~{ai_cycle_interval} min) unless SL/TP triggers.
 - Set SL/TP for moves realistic within **1–3 cycles** ({cycles_horizon_min}–{cycles_horizon_max} min); include round-trip fees and 8h funding if hold may cross a funding event.
@@ -184,7 +184,7 @@ Return ONLY valid JSON (no markdown):
 
 Examples:
 - Spot long: {{"action":"buy","symbol":"BTC/USDT","instrument_type":"spot","position_side":"long","leverage":1,...}}
-- Perp long 10x: {{"action":"buy","symbol":"SOL/USDT","instrument_type":"perpetual","position_side":"long","leverage":10,"amount_pct":10,...}}
+- Perp long 20x: {{"action":"buy","symbol":"SOL/USDT","instrument_type":"perpetual","position_side":"long","leverage":20,"amount_pct":10,...}}
 - Perp short 5x: {{"action":"sell","symbol":"ETH/USDT","instrument_type":"perpetual","position_side":"short","leverage":5,"amount_pct":15,...}}
 
 If no action recommended, set "hold": true and "proposals": [].
@@ -199,11 +199,11 @@ PROFILE_PROMPT_INSTRUCTIONS = {
         "ONLY perpetuals (long/short). NO spot. "
         "ALL-IN rule: every open and close uses amount_pct=100 (full margin in or full position out). "
         "Maximum ONE open position at a time — if a position is open, only HOLD, close at 100%, or rotate. "
-        "Leverage 10x always. "
-        "Take-profit MUST be 1.2% on price (= 12% ROE at 10x ≈ 11% net profit after ~1% round-trip fees on margin). "
-        "Stop-loss is AUTOMATIC at -8% ROE (0.8% price at 10x), monitored every 2 min — "
+        "Leverage 20x always. "
+        "Take-profit MUST be 1.2% on price (= 24% ROE at 20x; mandatory ROE take-profit still at +12% ROE ≈ 0.6% price). "
+        "Stop-loss is AUTOMATIC at -8% ROE (0.4% price at 20x), monitored every 5 seconds — "
         "losses never run past -8% ROE, so pick entries worth that risk. "
-        "Fees: 0.05% taker per side on notional (Binance USDT-M futures) = ~1% of margin round-trip at 10x. "
+        "Fees: 0.05% taker per side on notional (Binance USDT-M futures) = ~2% of margin round-trip at 20x. "
         "ENTRY RULES (hard-enforced by risk gate): conviction ≥ 60, quant conviction ≥ 60, "
         "direction must NOT contradict the 4h trend (no longs in 4h bearish, no shorts in 4h bullish), "
         "and 1h ATR must make a 1.2% move plausible (ATR×3 ≥ 1.2%). If no setup meets all rules, stay in cash. "
@@ -239,6 +239,7 @@ def build_cycle_prompt(
     profile: str = "extreme",
     ai_cycle_interval_minutes: int | None = None,
     risk_monitor_interval_minutes: int | None = None,
+    price_tick_interval_seconds: int | None = None,
 ) -> str:
     from ainvestor.config import get_profile_ai_cycle_interval, get_settings
     from ainvestor.engine.risk import max_position_pct_for_conviction
@@ -246,7 +247,8 @@ def build_cycle_prompt(
 
     prof = normalize_profile(profile)
     ai_cycle = ai_cycle_interval_minutes or get_profile_ai_cycle_interval(prof)
-    risk_monitor = risk_monitor_interval_minutes or get_settings().risk_monitor_interval
+    settings = get_settings()
+    price_tick = price_tick_interval_seconds or settings.price_tick_interval_seconds
     pos = risk_config["position"]
     fees = risk_config.get("fees", {})
     fee_rate = float(fees.get("fallback_taker_rate", 0.001))
@@ -290,7 +292,7 @@ def build_cycle_prompt(
         market_status=market_status or "unknown",
         mcp_instruction=mcp_instruction,
         ai_cycle_interval=ai_cycle,
-        risk_monitor_interval=risk_monitor,
+        price_tick_interval=price_tick,
         cycles_horizon_min=ai_cycle,
         cycles_horizon_max=ai_cycle * 3,
     )

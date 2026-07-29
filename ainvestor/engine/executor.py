@@ -43,6 +43,7 @@ class TradeExecutor:
         current_price: float,
         cycle_id: str | None = None,
         funding_rate: float = 0.0,
+        close_reason: str | None = None,
     ) -> bool:
         if not result.approved or result.proposal is None:
             return False
@@ -52,7 +53,9 @@ class TradeExecutor:
             return True
 
         if proposal.instrument_type == InstrumentType.PERPETUAL:
-            return await self._execute_perp_paper(proposal, current_price, cycle_id, funding_rate)
+            return await self._execute_perp_paper(
+                proposal, current_price, cycle_id, funding_rate, close_reason=close_reason
+            )
 
         if proposal.instrument_type == InstrumentType.STOCK or proposal.asset_class == AssetClass.STOCK:
             return await self._execute_stock(proposal, current_price, cycle_id)
@@ -72,6 +75,7 @@ class TradeExecutor:
         price: float,
         cycle_id: str | None,
         funding_rate: float,
+        close_reason: str | None = None,
     ) -> bool:
         portfolio = self.portfolio_mgr.get_or_create_portfolio()
         simulator = PerpPaperSimulator(self.db, portfolio)
@@ -169,11 +173,15 @@ class TradeExecutor:
                 return trade is not None
 
         if proposal.action == DecisionAction.SELL and pos is not None:
-            trade = simulator.close_position(pos, price, close_pct, cycle_id, fee_rate)
+            trade = simulator.close_position(
+                pos, price, close_pct, cycle_id, fee_rate, close_reason=close_reason
+            )
             return trade is not None
 
         if proposal.action == DecisionAction.BUY and pos is not None and proposal.position_side == "short":
-            trade = simulator.close_position(pos, price, close_pct, cycle_id, fee_rate)
+            trade = simulator.close_position(
+                pos, price, close_pct, cycle_id, fee_rate, close_reason=close_reason
+            )
             return trade is not None
 
         return False
@@ -240,7 +248,11 @@ class TradeExecutor:
         return False
 
     async def execute_stop_trigger(
-        self, symbol: str, price: float, cycle_id: str | None = None
+        self,
+        symbol: str,
+        price: float,
+        cycle_id: str | None = None,
+        close_reason: str | None = None,
     ) -> bool:
         simulator = self.portfolio_mgr.get_simulator()
         positions = simulator.get_open_positions()
@@ -260,7 +272,9 @@ class TradeExecutor:
 
         if getattr(position, "instrument_type", "spot") == "perpetual":
             perp_sim = PerpPaperSimulator(self.db, self.portfolio_mgr.get_or_create_portfolio())
-            trade = perp_sim.close_position(position, price, 100.0, cycle_id)
+            trade = perp_sim.close_position(
+                position, price, 100.0, cycle_id, close_reason=close_reason
+            )
             return trade is not None
 
         client = ExchangeClient()

@@ -25,7 +25,7 @@ from ainvestor.engine.exit_rules import (
 )
 from ainvestor.engine.instrument_context import build_instrument_opportunities
 from ainvestor.engine.learning import DecisionLearning
-from ainvestor.engine.proposal_order import proposal_execution_key, sort_proposals_for_execution
+from ainvestor.engine.proposal_order import is_close_proposal, proposal_execution_key, sort_proposals_for_execution
 from ainvestor.engine.quant import QuantEngine
 from ainvestor.engine.risk import RiskManager
 from ainvestor.models.schemas import AssetClass, InstrumentType
@@ -127,6 +127,7 @@ class CycleRunner:
                 profile=self.profile,
                 ai_cycle_interval_minutes=get_profile_ai_cycle_interval(self.profile),
                 risk_monitor_interval_minutes=get_settings().risk_monitor_interval,
+                price_tick_interval_seconds=get_settings().price_tick_interval_seconds,
             )
 
             if self.profile == PROFILE_EXTREME:
@@ -194,8 +195,11 @@ class CycleRunner:
                     signal=signals_by_symbol.get(proposal.symbol),
                 )
                 if check.approved:
+                    close_reason = None
+                    if is_close_proposal(proposal, snapshot):
+                        close_reason = "ai_discretionary"
                     success = await self.executor.execute_approved(
-                        check, price, cycle_id, funding_rate=funding_rate
+                        check, price, cycle_id, funding_rate=funding_rate, close_reason=close_reason
                     )
                     if success:
                         approved_count += 1
@@ -274,15 +278,102 @@ class CycleRunner:
                 "error": str(e),
             }
 
-    async def run_risk_monitor(self) -> dict:
-        prices: dict[str, float] = {}
-        for symbol in self.market.pairs:
-            try:
-                ticker = await self.market.client.fetch_ticker(symbol)
-                prices[symbol] = ticker.get("last") or ticker.get("close", 0)
-            except Exception:
-                pass
+    def _collect_exit_triggers(self, snapshot) -> list[tuple[str, str, float, str]]:
+        """Price/ROE exit triggers with close_reason for audit."""
+        triggers: list[tuple[str, str, float, str]] = []
+        seen: set[str] = set()
 
+        for pos in snapshot.positions:
+            side = getattr(pos, "position_side", "long") or "long"
+            if side == "short":
+                if pos.stop_loss and pos.current_price >= pos.stop_loss:
+                    triggers.append((pos.symbol, "sell", pos.current_price, "risk_sl"))
+                    seen.add(pos.symbol)
+                elif pos.take_profit and pos.current_price <= pos.take_profit:
+                    triggers.append((pos.symbol, "sell", pos.current_price, "risk_tp"))
+                    seen.add(pos.symbol)
+            else:
+                if pos.stop_loss and pos.current_price <= pos.stop_loss:
+                    triggers.append((pos.symbol, "sell", pos.current_price, "risk_sl"))
+                    seen.add(pos.symbol)
+                elif pos.take_profit and pos.current_price >= pos.take_profit:
+                    triggers.append((pos.symbol, "sell", pos.current_price, "risk_tp"))
+                    seen.add(pos.symbol)
+
+        for symbol, price in roe_take_profit_triggers(snapshot, self.profile):
+            if symbol not in seen:
+                triggers.append((symbol, "sell", price, "risk_roe_tp"))
+                seen.add(symbol)
+        for symbol, price in roe_stop_loss_triggers(snapshot, self.profile):
+            if symbol not in seen:
+                triggers.append((symbol, "sell", price, "risk_roe_sl"))
+                seen.add(symbol)
+        return triggers
+
+    async def run_price_risk_check(self) -> dict:
+        """Fast SL/TP/liquidation using in-memory price cache (every ~5s)."""
+        from ainvestor.services.market_prices import get_open_position_symbols
+        from ainvestor.services.price_cache import get_prices
+
+        portfolio = self.portfolio_mgr.get_or_create_portfolio()
+        open_syms = get_open_position_symbols(self.db, portfolio.id)
+        if not open_syms:
+            return {"profile": self.profile, "skip": "no_positions"}
+
+        prices = get_prices(list(open_syms))
+        if not prices:
+            return {"profile": self.profile, "skip": "no_prices"}
+
+        snapshot = await self.portfolio_mgr.get_snapshot(prices)
+        perp_sim = PerpPaperSimulator(self.db, portfolio)
+
+        liquidated: list[str] = []
+        positions = self.portfolio_mgr.get_simulator().get_open_positions()
+        trailing_updated = update_trailing_stops(positions, prices, self.profile)
+        if trailing_updated:
+            self.db.commit()
+
+        for pos in positions:
+            if getattr(pos, "instrument_type", "spot") != "perpetual":
+                continue
+            mark = prices.get(pos.symbol, pos.entry_price)
+            if perp_sim.check_liquidation(pos, mark):
+                trade = perp_sim.close_position(pos, mark, 100.0, close_reason="liquidation")
+                if trade:
+                    liquidated.append(pos.symbol)
+
+        snapshot = await self.portfolio_mgr.get_snapshot(prices)
+        triggers = self._collect_exit_triggers(snapshot)
+
+        executed: list[dict] = []
+        for symbol, action, price, reason in triggers:
+            if action == "sell":
+                success = await self.executor.execute_stop_trigger(
+                    symbol, price, close_reason=reason
+                )
+                if success:
+                    executed.append({"symbol": symbol, "reason": reason})
+
+        if executed or liquidated:
+            from ainvestor.services.charts import record_portfolio_value_async
+
+            await record_portfolio_value_async(self.db, self.portfolio_mgr, prices)
+
+        return {
+            "profile": self.profile,
+            "stop_triggers": executed,
+            "liquidated": liquidated,
+            "trailing_stops_updated": trailing_updated,
+        }
+
+    async def run_drawdown_check(self) -> dict:
+        """Kill switch on max drawdown (no exchange calls)."""
+        from ainvestor.services.market_prices import get_open_position_symbols
+        from ainvestor.services.price_cache import get_prices
+
+        portfolio = self.portfolio_mgr.get_or_create_portfolio()
+        open_syms = get_open_position_symbols(self.db, portfolio.id)
+        prices = get_prices(list(open_syms)) if open_syms else {}
         snapshot = await self.portfolio_mgr.get_snapshot(prices)
 
         if self.risk.should_activate_kill_switch(snapshot):
@@ -296,6 +387,10 @@ class CycleRunner:
             )
             return {"profile": self.profile, "kill_switch": True, "reason": "max_drawdown"}
 
+        return {"profile": self.profile, "kill_switch": snapshot.kill_switch_active}
+
+    async def run_funding_check(self) -> dict:
+        """Apply perp funding payments (infrequent, uses derivatives API)."""
         portfolio = self.portfolio_mgr.get_or_create_portfolio()
         perp_sim = PerpPaperSimulator(self.db, portfolio)
         deriv_snapshots = await self.derivatives.collect()
@@ -303,21 +398,10 @@ class CycleRunner:
         funding_interval = timedelta(hours=FUNDING_INTERVAL_HOURS)
         now = app_now()
 
-        liquidated: list[str] = []
         funded: list[str] = []
         positions = self.portfolio_mgr.get_simulator().get_open_positions()
-        trailing_updated = update_trailing_stops(positions, prices, self.profile)
-        if trailing_updated:
-            self.db.commit()
-
         for pos in positions:
             if getattr(pos, "instrument_type", "spot") != "perpetual":
-                continue
-            mark = prices.get(pos.symbol, pos.entry_price)
-            if perp_sim.check_liquidation(pos, mark):
-                trade = perp_sim.close_position(pos, mark, 100.0)
-                if trade:
-                    liquidated.append(pos.symbol)
                 continue
             last_funding = pos.last_funding_at or pos.opened_at
             if last_funding and now - last_funding >= funding_interval:
@@ -326,34 +410,7 @@ class CycleRunner:
                     perp_sim.apply_funding(pos, rate.funding_rate)
                     funded.append(pos.symbol)
 
-        triggers = self.risk.check_stop_loss_take_profit(snapshot)
-        roe_tp = roe_take_profit_triggers(snapshot, self.profile)
-        roe_sl = roe_stop_loss_triggers(snapshot, self.profile)
-        seen_symbols = {t[0] for t in triggers}
-        for symbol, price in roe_tp + roe_sl:
-            if symbol not in seen_symbols:
-                triggers.append((symbol, "sell", price))
-                seen_symbols.add(symbol)
-
-        executed = []
-        for symbol, action, price in triggers:
-            if action == "sell":
-                success = await self.executor.execute_stop_trigger(symbol, price)
-                if success:
-                    executed.append(symbol)
-
-        from ainvestor.services.charts import record_portfolio_value_async
-
-        await record_portfolio_value_async(self.db, self.portfolio_mgr, prices)
-
-        return {
-            "profile": self.profile,
-            "kill_switch": snapshot.kill_switch_active,
-            "stop_triggers": executed,
-            "liquidated": liquidated,
-            "funding_applied": funded,
-            "trailing_stops_updated": trailing_updated,
-        }
+        return {"profile": self.profile, "funding_applied": funded}
 
     async def _execute_mandatory_exits(
         self,
@@ -390,7 +447,9 @@ class CycleRunner:
                 cycle_proposals=mandatory,
             )
             if check.approved:
-                if await self.executor.execute_approved(check, price, cycle_id):
+                if await self.executor.execute_approved(
+                    check, price, cycle_id, close_reason="ai_mandatory"
+                ):
                     executed += 1
                     snapshot = await self.portfolio_mgr.get_snapshot(prices)
         if executed:
@@ -440,7 +499,7 @@ class CycleRunner:
                     f"notional {notional:.2f}, entry {pos.entry_price:.2f}, "
                     f"mark {pos.current_price:.2f}, PnL {pos.unrealized_pnl:+.2f}, "
                     f"ROE {roe}, liq_dist ~{liq}, "
-                    f"auto-TP +12% ROE / auto-SL -8% ROE (monitor every 2 min)"
+                    f"auto-TP +12% ROE / auto-SL -8% ROE (monitor every {get_settings().price_tick_interval_seconds}s)"
                 )
             else:
                 lines.append(

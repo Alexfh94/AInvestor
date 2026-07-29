@@ -1,6 +1,22 @@
 """Human-readable labels for trade records."""
 from __future__ import annotations
 
+CLOSE_REASON_LABELS = {
+    "risk_sl": "Stop-loss precio",
+    "risk_tp": "Take-profit precio",
+    "risk_roe_sl": "Stop-loss ROE",
+    "risk_roe_tp": "Take-profit ROE",
+    "ai_mandatory": "Cierre obligatorio",
+    "ai_discretionary": "Decisión IA",
+    "liquidation": "Liquidación",
+}
+
+
+def format_close_reason(close_reason: str | None) -> str | None:
+    if not close_reason:
+        return None
+    return CLOSE_REASON_LABELS.get(close_reason, close_reason)
+
 
 def infer_trade_action(
     *,
@@ -87,5 +103,7 @@ def trade_to_api_dict(trade) -> dict:
         "margin_used": margin_used,
         "realized_pnl_usdt": getattr(trade, "realized_pnl_usdt", None),
         "pnl_pct_roe": getattr(trade, "pnl_pct_roe", None),
+        "close_reason": getattr(trade, "close_reason", None),
+        "close_reason_label": format_close_reason(getattr(trade, "close_reason", None)),
         "executed_at": format_app_datetime(trade.executed_at),
     }

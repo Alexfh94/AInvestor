@@ -102,11 +102,11 @@ profiles:
     derivatives:
       enabled: true
       paper_only: true
-      max_leverage: 10
+      max_leverage: 20
       max_open_perps: 1
       funding_cost_warning_pct: 0.20
       isolated_margin: true
-      mifid_retail_leverage_cap: 10
+      mifid_retail_leverage_cap: 20
     stocks:
       enabled: false
     prompt_style: extreme

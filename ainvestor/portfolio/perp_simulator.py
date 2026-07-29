@@ -121,6 +121,7 @@ class PerpPaperSimulator:
         close_pct: float = 100.0,
         cycle_id: str | None = None,
         fee_rate: float | None = None,
+        close_reason: str | None = None,
     ) -> Trade | None:
         fee_rate = self.perp_fee_rate if fee_rate is None else fee_rate
         close_amount = position.amount * (close_pct / 100)
@@ -165,6 +166,7 @@ class PerpPaperSimulator:
             asset_class="derivative",
             cycle_id=cycle_id,
             trade_action="close",
+            close_reason=close_reason,
             realized_pnl_usdt=round(net_pnl, 6),
             pnl_pct_roe=round(pnl_pct_roe, 4) if pnl_pct_roe is not None else None,
         )

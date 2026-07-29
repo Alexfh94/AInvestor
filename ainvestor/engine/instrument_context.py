@@ -107,7 +107,7 @@ def build_instrument_opportunities(
 
         f"ALL-IN: amount_pct=100 on every open and close (full margin / full exit).",
 
-        f"Stop-loss minimum: 100/leverage % (e.g. 10x → 10% SL).",
+        f"Stop-loss minimum: 100/leverage % (e.g. 20x → 5% SL).",
 
         f"For perpetuals: amount_pct = margin % of balance; notional = margin × leverage",
 

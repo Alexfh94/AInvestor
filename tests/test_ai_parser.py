@@ -20,10 +20,10 @@ def test_build_cycle_prompt_includes_execution_cadence():
         risk_config=load_risk_config(profile=PROFILE_EXTREME),
         profile=PROFILE_EXTREME,
         ai_cycle_interval_minutes=30,
-        risk_monitor_interval_minutes=5,
+        price_tick_interval_seconds=5,
     )
     assert "every **30 minutes** only" in prompt
-    assert "every **5 minutes**" in prompt
+    assert "every **5 seconds**" in prompt
     assert "1–3 cycles" in prompt
     assert "90 min" in prompt
 

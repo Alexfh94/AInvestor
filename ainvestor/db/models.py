@@ -79,6 +79,7 @@ class Trade(Base):
     exchange_order_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     cycle_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     trade_action: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    close_reason: Mapped[str | None] = mapped_column(String(30), nullable=True)
     realized_pnl_usdt: Mapped[float | None] = mapped_column(Float, nullable=True)
     pnl_pct_roe: Mapped[float | None] = mapped_column(Float, nullable=True)
     executed_at: Mapped[datetime] = mapped_column(DateTime, default=app_now)
@@ -378,6 +379,7 @@ def _migrate_db() -> None:
             "leverage": "INTEGER DEFAULT 1",
             "asset_class": "VARCHAR(20) DEFAULT 'crypto'",
             "trade_action": "VARCHAR(10)",
+            "close_reason": "VARCHAR(30)",
             "realized_pnl_usdt": "FLOAT",
             "pnl_pct_roe": "FLOAT",
         }),

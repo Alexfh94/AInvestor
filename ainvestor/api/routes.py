@@ -23,7 +23,25 @@ def _profile_param(profile: str = Query("extreme", alias="profile")) -> str:
 
 @router.get("/health")
 async def health():
-    return {"status": "ok", "timestamp": app_now_iso(), "timezone": "Europe/Madrid"}
+    from ainvestor.services.price_cache import cache_status
+
+    return {
+        "status": "ok",
+        "timestamp": app_now_iso(),
+        "timezone": "Europe/Madrid",
+        "price_cache": cache_status(),
+    }
+
+
+@router.get("/prices/live")
+async def get_live_prices():
+    """Latest in-memory prices (no DB/exchange call)."""
+    from ainvestor.services.price_cache import cache_status, get_prices
+
+    return {
+        **cache_status(),
+        "prices": get_prices(),
+    }
 
 
 @router.get("/portfolios")
