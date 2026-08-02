@@ -204,6 +204,7 @@ class RiskManager:
 
         if is_opening:
             self._auto_adjust_perp_stop_loss(proposal)
+            self._auto_adjust_perp_take_profit(proposal)
             if not derivatives_available:
                 reasons.append(
                     "Derivatives data (funding/OI) unavailable — perpetual open blocked"
@@ -268,6 +269,15 @@ class RiskManager:
         target_sl = min(stop_roe / proposal.leverage, liq_pct)
         if abs(proposal.stop_loss_pct - target_sl) > 0.01:
             proposal.stop_loss_pct = target_sl
+
+    def _auto_adjust_perp_take_profit(self, proposal: TradeProposal) -> None:
+        """Perps usan TP solo por ROE; elimina TP de precio heredado de prompts legacy."""
+        stops_cfg = self.config.get("stops", {})
+        if stops_cfg.get("require_take_profit", False):
+            return
+        max_tp = float(stops_cfg.get("max_take_profit_pct_perp", 0.0))
+        if max_tp <= 0 and proposal.take_profit_pct > 0:
+            proposal.take_profit_pct = 0.0
 
     def _check_direction_alignment(self, proposal: TradeProposal, signal) -> list[str]:
         """La dirección propuesta debe coincidir con el score dominante del quant."""

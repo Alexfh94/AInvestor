@@ -869,13 +869,31 @@
             return `<span class="badge ${map[outcome] || 'neutral'}">${labels[outcome] || outcome}</span>`;
         }
 
+        function decisionTypeBadge(d) {
+            if (d.hold) return '<span class="badge hold">HOLD</span>';
+            if (d.approved > 0 && d.rejected > 0) return '<span class="badge neutral">PARTIAL</span>';
+            if (d.rejected > 0 && d.approved === 0) return '<span class="badge bad">REJECTED</span>';
+            if (d.approved > 0) return '<span class="badge good">TRADE</span>';
+            return '<span class="badge paper">TRADE</span>';
+        }
+
+        function executionStatusBadge(status) {
+            const map = {
+                approved: { cls: 'good', label: 'Ejecutada' },
+                rejected: { cls: 'bad', label: 'Rechazada' },
+                hold: { cls: 'hold', label: 'Hold' },
+            };
+            const m = map[status] || { cls: 'pending', label: status || '—' };
+            return `<span class="badge ${m.cls}">${m.label}</span>`;
+        }
+
         function renderDecisions(decisions) {
             const el = document.getElementById('decisions-table');
             if (!decisions.length) { el.innerHTML = '<p class="muted">Sin decisiones</p>'; return; }
             el.innerHTML = tableScroll(`<table><thead><tr>
-                <th>Fecha</th><th>Tipo</th><th>Resumen</th><th>Tokens</th><th>Ops</th><th>Evaluación</th>
+                <th>Fecha</th><th>Tipo</th><th>Resumen</th><th>Tokens</th><th>Ops</th><th>Ejecución / evaluación</th>
             </tr></thead><tbody>` + decisions.map(d => {
-                const tipo = d.hold ? '<span class="badge hold">HOLD</span>' : '<span class="badge paper">TRADE</span>';
+                const tipo = decisionTypeBadge(d);
                 const tu = d.token_usage || {};
                 const tokens = tu.total_tokens
                     ? `${tu.total_tokens.toLocaleString('es-ES')} <span class="muted">(${tu.input_tokens}/${tu.output_tokens})</span>`
@@ -887,8 +905,15 @@
                     } else if (o.action && o.action !== 'hold') {
                         label += ` ${(o.action || '').toUpperCase()}`;
                     }
-                    return `${label} ${outcomeBadge(o.outcome)}${o.return_pct != null ? ' ' + (o.return_pct >= 0 ? '+' : '') + fmt(o.return_pct, 1) + '%' : ''}`;
-                }).join('<br>') || '<span class="muted">Pendiente</span>';
+                    const exec = executionStatusBadge(o.execution_status);
+                    const notes = o.notes
+                        ? `<div class="muted" style="font-size:0.75rem;margin-top:0.15rem">${o.notes}</div>`
+                        : '';
+                    const evalLine = o.execution_status === 'approved' && o.outcome
+                        ? ` ${outcomeBadge(o.outcome)}${o.return_pct != null ? ' ' + (o.return_pct >= 0 ? '+' : '') + fmt(o.return_pct, 1) + '%' : ''}`
+                        : '';
+                    return `${label} ${exec}${evalLine}${notes}`;
+                }).join('<br>') || '<span class="muted">—</span>';
                 return `<tr>
                     <td>${fmtDate(d.created_at)}</td>
                     <td>${tipo}</td>
