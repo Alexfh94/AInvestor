@@ -428,9 +428,9 @@ def test_perp_close_blocked_by_min_hold_in_roe_band(db_session):
 
 
 def test_perp_close_blocked_by_min_hold_on_early_winner(db_session):
-    """ROE +7 sigue en banda [-4, +8): no se corta un ganador antes del trailing."""
+    """ROE +4 sigue en banda [-3, +5): no se corta un ganador antes del trailing."""
     risk = RiskManager(db_session, profile=PROFILE_EXTREME)
-    proposal, snapshot = _min_hold_setup(db_session, roe=7.0)
+    proposal, snapshot = _min_hold_setup(db_session, roe=4.0)
     result = risk.validate_proposal(
         proposal, snapshot, current_price=3021.0, derivatives_available=True
     )
@@ -439,9 +439,9 @@ def test_perp_close_blocked_by_min_hold_on_early_winner(db_session):
 
 
 def test_perp_close_allowed_below_band_when_thesis_broken(db_session):
-    """ROE -5 (< -4): la IA puede cortar aunque la posición sea joven."""
+    """ROE -4 (< -3): la IA puede cortar aunque la posición sea joven."""
     risk = RiskManager(db_session, profile=PROFILE_EXTREME)
-    proposal, snapshot = _min_hold_setup(db_session, roe=-5.0)
+    proposal, snapshot = _min_hold_setup(db_session, roe=-4.0)
     result = risk.validate_proposal(
         proposal, snapshot, current_price=2985.0, derivatives_available=True
     )

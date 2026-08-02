@@ -45,6 +45,19 @@ async def refresh_prices(symbols: list[str] | None = None) -> dict[str, float]:
         return get_prices()
 
     client = ExchangeClient()
+    if len(symbol_list) == 1:
+        sym = symbol_list[0]
+        try:
+            ticker = await client.fetch_ticker(sym)
+            last = ticker.get("last") or ticker.get("close")
+            if last:
+                with _lock:
+                    _cache[sym] = float(last)
+                    _updated_at = app_now()
+        except Exception as e:
+            logger.debug("price_cache ticker %s failed: %s", sym, e)
+        return get_prices(symbol_list)
+
     try:
         tickers = await client.fetch_tickers(symbol_list)
         now = app_now()

@@ -69,7 +69,8 @@ class Settings(BaseSettings):
 
     risk_monitor_interval: int = 2
     market_collect_interval: int = 5
-    price_tick_interval_seconds: int = 5
+    price_tick_interval_seconds: int = 1
+    price_tick_idle_interval_seconds: int = 10
     funding_check_interval_minutes: int = 30
     ai_cycle_interval: int = 120
     decision_eval_hours: int = 24

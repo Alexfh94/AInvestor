@@ -29,17 +29,15 @@ async def _run_ai_cycle_for_profile(profile: str):
         db.close()
 
 
-async def _run_price_tick():
-    """Refresh live prices and run SL/TP checks when positions are open."""
+async def _run_price_tick_active():
+    """Every 1s: refresh open-position symbol(s) and run SL/TP checks."""
     db = SessionLocal()
     try:
         open_syms = get_open_position_symbols(db)
-        symbols = list(set(get_all_market_pairs()) | open_syms)
-        await refresh_prices(symbols)
-        await maybe_persist_snapshots(db, symbols)
-
         if not open_syms:
             return
+
+        await refresh_prices(list(open_syms))
 
         for profile in PROFILES:
             runner = CycleRunner(db, profile=profile)
@@ -47,7 +45,20 @@ async def _run_price_tick():
             if result.get("stop_triggers") or result.get("liquidated"):
                 logger.warning("Price risk check (%s): %s", profile, result)
     except Exception as e:
-        logger.exception("Price tick error: %s", e)
+        logger.exception("Price tick active error: %s", e)
+    finally:
+        db.close()
+
+
+async def _run_price_tick_idle():
+    """Every 10s: refresh full whitelist for dashboard (no SL/TP)."""
+    db = SessionLocal()
+    try:
+        symbols = get_all_market_pairs()
+        await refresh_prices(symbols)
+        await maybe_persist_snapshots(db, symbols)
+    except Exception as e:
+        logger.exception("Price tick idle error: %s", e)
     finally:
         db.close()
 
@@ -163,9 +174,15 @@ def start_scheduler() -> AsyncIOScheduler:
         )
 
     _scheduler.add_job(
-        _run_price_tick,
+        _run_price_tick_active,
         IntervalTrigger(seconds=settings.price_tick_interval_seconds),
-        id="price_tick",
+        id="price_tick_active",
+        replace_existing=True,
+    )
+    _scheduler.add_job(
+        _run_price_tick_idle,
+        IntervalTrigger(seconds=settings.price_tick_idle_interval_seconds),
+        id="price_tick_idle",
         replace_existing=True,
     )
     _scheduler.add_job(
@@ -189,9 +206,11 @@ def start_scheduler() -> AsyncIOScheduler:
 
     _scheduler.start()
     logger.info(
-        "Scheduler started: AI cycles=%s, PriceTick=%ds, Risk=%dmin, Funding=%dmin, Market=%dmin",
+        "Scheduler started: AI cycles=%s, PriceActive=%ds, PriceIdle=%ds, "
+        "Risk=%dmin, Funding=%dmin, Market=%dmin",
         ai_intervals,
         settings.price_tick_interval_seconds,
+        settings.price_tick_idle_interval_seconds,
         settings.risk_monitor_interval,
         settings.funding_check_interval_minutes,
         settings.market_collect_interval,

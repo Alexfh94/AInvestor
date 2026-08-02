@@ -494,12 +494,16 @@ class CycleRunner:
                 notional = pos.notional_usdt or 0
                 roe = f"{pos.roe_pct:+.1f}%" if pos.roe_pct is not None else "N/A"
                 liq = f"{pos.liq_distance_pct:.0f}%" if pos.liq_distance_pct is not None else "N/A"
+                exit_cfg = load_risk_config(profile=self.profile).get("exit_rules", {})
+                tp_roe = float(exit_cfg.get("take_profit_roe_pct", 6.0))
+                sl_roe = float(exit_cfg.get("stop_loss_roe_pct", -6.0))
+                tick = get_settings().price_tick_interval_seconds
                 lines.append(
                     f"  {pos.symbol} [perpetual {side} {lev}x]: margin {margin:.2f} USDT, "
                     f"notional {notional:.2f}, entry {pos.entry_price:.2f}, "
                     f"mark {pos.current_price:.2f}, PnL {pos.unrealized_pnl:+.2f}, "
                     f"ROE {roe}, liq_dist ~{liq}, "
-                    f"auto-TP +12% ROE / auto-SL -8% ROE (monitor every {get_settings().price_tick_interval_seconds}s)"
+                    f"auto-TP +{tp_roe:.0f}% ROE / auto-SL {sl_roe:.0f}% ROE (monitor every {tick}s when open)"
                 )
             else:
                 lines.append(
