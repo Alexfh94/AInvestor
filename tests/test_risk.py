@@ -13,6 +13,7 @@ from ainvestor.models.schemas import (
     InstrumentType,
     PortfolioSnapshot,
     PositionSnapshot,
+    TechnicalSignal,
     TradeProposal,
     TradingMode,
 )
@@ -54,6 +55,18 @@ def _snapshot(portfolio_id: int = 1, **kwargs) -> PortfolioSnapshot:
     return PortfolioSnapshot(**defaults)
 
 
+def _valid_long_signal(symbol: str = "ETH/USDT") -> TechnicalSignal:
+    return TechnicalSignal(
+        symbol=symbol,
+        trend_4h="bullish",
+        trend_1h="bullish",
+        long_score=80,
+        short_score=40,
+        tradable=True,
+        atr_pct=0.8,
+    )
+
+
 def test_approve_valid_buy(db_session):
     portfolio = db_session.query(Portfolio).first()
     risk = RiskManager(db_session, profile=PROFILE_EXTREME)
@@ -62,10 +75,10 @@ def test_approve_valid_buy(db_session):
         symbol="BTC/USDT",
         amount_pct=100.0,
         stop_loss_pct=10.0,
-        take_profit_pct=1.2,
-        conviction=70,
+        take_profit_pct=0.0,
+        conviction=80,
         instrument_type=InstrumentType.PERPETUAL,
-        leverage=10,
+        leverage=20,
         position_side="long",
     )
     result = risk.validate_proposal(
@@ -73,6 +86,14 @@ def test_approve_valid_buy(db_session):
         _snapshot(portfolio_id=portfolio.id),
         current_price=50000.0,
         derivatives_available=True,
+        signal=TechnicalSignal(
+            symbol="BTC/USDT",
+            trend_4h="bullish",
+            long_score=80,
+            short_score=40,
+            tradable=True,
+            atr_pct=0.8,
+        ),
     )
     assert result.approved is True
 
@@ -154,7 +175,7 @@ def test_reject_oversized_position(db_session):
         take_profit_pct=6.0,
         conviction=50,
         instrument_type=InstrumentType.PERPETUAL,
-        leverage=10,
+        leverage=20,
         position_side="long",
     )
     result = risk.validate_proposal(
@@ -185,8 +206,32 @@ def test_approve_high_conviction_large_position(db_session):
         symbol="BTC/USDT",
         amount_pct=100.0,
         stop_loss_pct=10.0,
-        take_profit_pct=1.2,
+        take_profit_pct=0.0,
         conviction=90,
+        instrument_type=InstrumentType.PERPETUAL,
+        leverage=20,
+        position_side="long",
+    )
+    result = risk.validate_proposal(
+        proposal,
+        _snapshot(portfolio_id=portfolio.id),
+        current_price=50000.0,
+        derivatives_available=True,
+        signal=_valid_long_signal("BTC/USDT"),
+    )
+    assert result.approved is True
+
+
+def test_reject_non_20x_leverage(db_session):
+    portfolio = db_session.query(Portfolio).first()
+    risk = RiskManager(db_session, profile=PROFILE_EXTREME)
+    proposal = TradeProposal(
+        action=DecisionAction.BUY,
+        symbol="BTC/USDT",
+        amount_pct=100.0,
+        stop_loss_pct=0.4,
+        take_profit_pct=0.0,
+        conviction=80,
         instrument_type=InstrumentType.PERPETUAL,
         leverage=10,
         position_side="long",
@@ -196,8 +241,10 @@ def test_approve_high_conviction_large_position(db_session):
         _snapshot(portfolio_id=portfolio.id),
         current_price=50000.0,
         derivatives_available=True,
+        signal=_valid_long_signal("BTC/USDT"),
     )
-    assert result.approved is True
+    assert result.approved is False
+    assert any("20x" in r for r in result.rejection_reasons)
 
 
 def test_conviction_scaling(db_session):
@@ -248,54 +295,63 @@ def test_stop_loss_trigger(db_session):
     assert triggers[0][1] == "sell"
 
 
-def test_perp_accepts_target_tp_after_fees(db_session):
-    """Perp TP target 1.2% passes validation; sub-minimum is auto-adjusted."""
+def test_perp_accepts_zero_tp(db_session):
+    """Perps usan solo TP por ROE; take_profit_pct=0 es válido."""
     portfolio = db_session.query(Portfolio).first()
     risk = RiskManager(db_session, profile=PROFILE_EXTREME)
     proposal = TradeProposal(
         action=DecisionAction.BUY,
         symbol="BNB/USDT",
         amount_pct=100.0,
-        stop_loss_pct=10.0,
-        take_profit_pct=1.2,
+        stop_loss_pct=0.4,
+        take_profit_pct=0.0,
         conviction=80,
         instrument_type=InstrumentType.PERPETUAL,
-        leverage=10,
+        leverage=20,
         position_side="long",
     )
     result = risk.validate_proposal(
         proposal,
         _snapshot(portfolio_id=portfolio.id),
         current_price=600.0,
-        fee_rate=0.001,
+        fee_rate=0.0005,
         derivatives_available=True,
+        signal=_valid_long_signal("BNB/USDT"),
     )
     assert result.approved is True
 
 
-def test_perp_auto_adjusts_low_tp_to_target(db_session):
+def test_perp_rejects_direction_mismatch(db_session):
     portfolio = db_session.query(Portfolio).first()
     risk = RiskManager(db_session, profile=PROFILE_EXTREME)
+    signal = TechnicalSignal(
+        symbol="BNB/USDT",
+        trend_4h="bullish",
+        long_score=40,
+        short_score=80,
+        tradable=True,
+        atr_pct=0.8,
+    )
     proposal = TradeProposal(
         action=DecisionAction.BUY,
         symbol="BNB/USDT",
         amount_pct=100.0,
-        stop_loss_pct=10.0,
-        take_profit_pct=0.5,
+        stop_loss_pct=0.4,
+        take_profit_pct=0.0,
         conviction=80,
         instrument_type=InstrumentType.PERPETUAL,
-        leverage=10,
+        leverage=20,
         position_side="long",
     )
     result = risk.validate_proposal(
         proposal,
         _snapshot(portfolio_id=portfolio.id),
         current_price=600.0,
-        fee_rate=0.001,
         derivatives_available=True,
+        signal=signal,
     )
-    assert result.approved is True
-    assert result.proposal.take_profit_pct == 1.2
+    assert result.approved is False
+    assert any("short_score" in r for r in result.rejection_reasons)
 
 
 def _open_proposal(symbol: str = "ETH/USDT", side: str = "long") -> TradeProposal:
@@ -304,11 +360,11 @@ def _open_proposal(symbol: str = "ETH/USDT", side: str = "long") -> TradeProposa
         action=action,
         symbol=symbol,
         amount_pct=100.0,
-        stop_loss_pct=10.0,
-        take_profit_pct=1.2,
+        stop_loss_pct=0.4,
+        take_profit_pct=0.0,
         conviction=80,
         instrument_type=InstrumentType.PERPETUAL,
-        leverage=10,
+        leverage=20,
         position_side=side,
     )
 
@@ -318,7 +374,14 @@ def test_perp_open_blocked_against_4h_trend(db_session):
 
     portfolio = db_session.query(Portfolio).first()
     risk = RiskManager(db_session, profile=PROFILE_EXTREME)
-    signal = TechnicalSignal(symbol="ETH/USDT", trend_4h="bearish")
+    signal = TechnicalSignal(
+        symbol="ETH/USDT",
+        trend_4h="bearish",
+        long_score=30,
+        short_score=70,
+        tradable=True,
+        atr_pct=0.8,
+    )
     result = risk.validate_proposal(
         _open_proposal(side="long"),
         _snapshot(portfolio_id=portfolio.id),
@@ -327,7 +390,7 @@ def test_perp_open_blocked_against_4h_trend(db_session):
         signal=signal,
     )
     assert result.approved is False
-    assert any("4h trend" in r for r in result.rejection_reasons)
+    assert any("4h trend" in r or "short_score" in r for r in result.rejection_reasons)
 
 
 def test_perp_open_allowed_with_4h_trend_aligned(db_session):
@@ -335,7 +398,14 @@ def test_perp_open_allowed_with_4h_trend_aligned(db_session):
 
     portfolio = db_session.query(Portfolio).first()
     risk = RiskManager(db_session, profile=PROFILE_EXTREME)
-    signal = TechnicalSignal(symbol="ETH/USDT", trend_4h="bullish", atr_pct=0.6)
+    signal = TechnicalSignal(
+        symbol="ETH/USDT",
+        trend_4h="bullish",
+        long_score=80,
+        short_score=40,
+        tradable=True,
+        atr_pct=0.8,
+    )
     result = risk.validate_proposal(
         _open_proposal(side="long"),
         _snapshot(portfolio_id=portfolio.id),
@@ -351,7 +421,14 @@ def test_perp_open_blocked_when_atr_too_low_for_tp(db_session):
 
     portfolio = db_session.query(Portfolio).first()
     risk = RiskManager(db_session, profile=PROFILE_EXTREME)
-    signal = TechnicalSignal(symbol="ETH/USDT", trend_4h="bullish", atr_pct=0.2)
+    signal = TechnicalSignal(
+        symbol="ETH/USDT",
+        trend_4h="bullish",
+        long_score=80,
+        short_score=40,
+        tradable=True,
+        atr_pct=0.1,
+    )
     result = risk.validate_proposal(
         _open_proposal(side="long"),
         _snapshot(portfolio_id=portfolio.id),
@@ -375,7 +452,7 @@ def _min_hold_setup(db_session, roe: float):
             entry_price=3000.0,
             instrument_type="perpetual",
             position_side="long",
-            leverage=10,
+            leverage=20,
             margin_used=100.0,
             is_open=True,
         )
@@ -390,7 +467,7 @@ def _min_hold_setup(db_session, roe: float):
         take_profit_pct=1.2,
         conviction=80,
         instrument_type=InstrumentType.PERPETUAL,
-        leverage=10,
+        leverage=20,
         position_side="long",
     )
     snapshot = _snapshot(
@@ -407,7 +484,7 @@ def _min_hold_setup(db_session, roe: float):
                 unrealized_pnl=roe,
                 instrument_type="perpetual",
                 position_side="long",
-                leverage=10,
+                leverage=20,
                 margin_used=100.0,
                 notional_usdt=1000.0,
                 roe_pct=roe,

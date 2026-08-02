@@ -29,9 +29,9 @@ def _perp_position(roe: float, symbol: str = "ETH/USDT", side: str = "long") -> 
         unrealized_pnl=roe,
         instrument_type="perpetual",
         position_side=side,
-        leverage=10,
+        leverage=20,
         margin_used=100.0,
-        notional_usdt=1000.0,
+        notional_usdt=2000.0,
         roe_pct=roe,
     )
 
@@ -60,12 +60,12 @@ def test_mandatory_close_on_profit_regardless_of_trend():
     )
     assert len(proposals) == 1
     assert proposals[0].action.value == "sell"
-    assert proposals[0].take_profit_pct == 1.2
+    assert proposals[0].take_profit_pct == 0.0
 
 
 def test_mandatory_close_on_loss_regardless_of_quant():
-    """El corte a -6% ROE es incondicional, aunque el quant siga alto."""
-    pos = _perp_position(roe=-7.0)
+    """El corte a -8% ROE es incondicional, aunque el quant siga alto."""
+    pos = _perp_position(roe=-9.0)
     signal = TechnicalSignal(symbol="ETH/USDT", trend_1h="bearish", trend="bearish")
     proposals = mandatory_close_proposals(
         _snapshot([pos]),
@@ -90,13 +90,13 @@ def test_no_mandatory_close_on_moderate_loss_leaves_ai_decision():
 
 
 def test_roe_take_profit_triggers():
-    pos = _perp_position(roe=7.0)
+    pos = _perp_position(roe=13.0)
     triggers = roe_take_profit_triggers(_snapshot([pos]), PROFILE_EXTREME)
     assert triggers == [("ETH/USDT", 100.0)]
 
 
 def test_roe_stop_loss_triggers():
-    pos = _perp_position(roe=-6.5)
+    pos = _perp_position(roe=-8.5)
     triggers = roe_stop_loss_triggers(_snapshot([pos]), PROFILE_EXTREME)
     assert triggers == [("ETH/USDT", 100.0)]
 

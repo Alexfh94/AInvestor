@@ -120,15 +120,29 @@ def test_risk_perp_validates_margin_not_notional(db_session):
         action=DecisionAction.BUY,
         symbol="SOL/USDT",
         amount_pct=100.0,
-        stop_loss_pct=10.0,
-        take_profit_pct=1.2,
+        stop_loss_pct=0.4,
+        take_profit_pct=0.0,
         conviction=80,
         instrument_type=InstrumentType.PERPETUAL,
         position_side="long",
-        leverage=10,
+        leverage=20,
     )
+    from ainvestor.models.schemas import TechnicalSignal
+
     result = risk.validate_proposal(
-        proposal, snap, 100.0, funding_rate=0.0001, derivatives_available=True
+        proposal,
+        snap,
+        100.0,
+        funding_rate=0.0001,
+        derivatives_available=True,
+        signal=TechnicalSignal(
+            symbol="SOL/USDT",
+            trend_4h="bullish",
+            long_score=80,
+            short_score=40,
+            tradable=True,
+            atr_pct=0.8,
+        ),
     )
     assert result.approved is True
 

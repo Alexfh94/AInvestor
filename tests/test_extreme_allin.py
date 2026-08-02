@@ -110,15 +110,28 @@ def test_extreme_auto_adjusts_stop_loss_to_roe_target(db_session):
     proposal = _perp_proposal(stop_loss_pct=10.0, leverage=20)
     result = risk.validate_proposal(proposal, _snapshot(portfolio), current_price=50000.0)
     assert result.approved is True
-    assert proposal.stop_loss_pct == pytest.approx(0.3)
+    assert proposal.stop_loss_pct == pytest.approx(0.4)
 
 
 def test_extreme_accepts_all_in_perp(db_session):
+    from ainvestor.models.schemas import TechnicalSignal
+
     portfolio = db_session.query(Portfolio).filter(Portfolio.profile == PROFILE_EXTREME).first()
     risk = RiskManager(db_session, profile=PROFILE_EXTREME)
     proposal = _perp_proposal()
     result = risk.validate_proposal(
-        proposal, _snapshot(portfolio), current_price=50000.0, derivatives_available=True
+        proposal,
+        _snapshot(portfolio),
+        current_price=50000.0,
+        derivatives_available=True,
+        signal=TechnicalSignal(
+            symbol="BTC/USDT",
+            trend_4h="bullish",
+            long_score=80,
+            short_score=40,
+            tradable=True,
+            atr_pct=0.8,
+        ),
     )
     assert result.approved is True
 

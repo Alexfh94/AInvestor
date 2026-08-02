@@ -152,12 +152,12 @@ async def test_rotation_executes_close_then_open(db_session):
         action=DecisionAction.BUY,
         symbol="ETH/USDT",
         amount_pct=100.0,
-        stop_loss_pct=10.0,
-        take_profit_pct=1.2,
+        stop_loss_pct=0.4,
+        take_profit_pct=0.0,
         conviction=85,
         instrument_type=InstrumentType.PERPETUAL,
         position_side="long",
-        leverage=10,
+        leverage=20,
     )
 
     ordered = sort_proposals_for_execution([open_eth, close_link], snapshot)
@@ -165,6 +165,18 @@ async def test_rotation_executes_close_then_open(db_session):
 
     for proposal in ordered:
         price = prices[proposal.symbol]
+        signal = None
+        if proposal.symbol == "ETH/USDT" and proposal.action == DecisionAction.BUY:
+            from ainvestor.models.schemas import TechnicalSignal
+
+            signal = TechnicalSignal(
+                symbol="ETH/USDT",
+                trend_4h="bullish",
+                long_score=85,
+                short_score=40,
+                tradable=True,
+                atr_pct=0.8,
+            )
         check = risk.validate_proposal(
             proposal,
             snapshot,
@@ -172,6 +184,8 @@ async def test_rotation_executes_close_then_open(db_session):
             fee_rate=0.001,
             derivatives_available=True,
             cycle_proposals=ordered,
+            quant_map={"ETH/USDT": 85, "LINK/USDT": 70},
+            signal=signal,
         )
         assert check.approved, check.rejection_reasons
         ok = await executor.execute_approved(check, price, "test-rotation")
