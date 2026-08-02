@@ -87,27 +87,41 @@ async def get_portfolio(
 
 @router.get("/trades")
 async def get_trades(
-    limit: int = 50,
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     profile: str = Depends(_profile_param),
 ):
     from ainvestor.services.trade_labels import trade_to_api_dict
 
     mgr = PortfolioManager(db, profile=profile)
-    trades = mgr.get_trade_history(limit=limit)
-    return [trade_to_api_dict(t) for t in trades]
+    trades, total = mgr.get_trade_history(limit=limit, offset=offset)
+    return {
+        "items": [trade_to_api_dict(t) for t in trades],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "has_more": offset + len(trades) < total,
+    }
 
 
 @router.get("/decisions")
 async def get_decisions(
-    limit: int = 20,
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     profile: str = Depends(_profile_param),
 ):
+    total = (
+        db.query(AIDecision)
+        .filter(AIDecision.profile == profile)
+        .count()
+    )
     decisions = (
         db.query(AIDecision)
         .filter(AIDecision.profile == profile)
         .order_by(AIDecision.created_at.desc())
+        .offset(offset)
         .limit(limit)
         .all()
     )
@@ -159,7 +173,13 @@ async def get_decisions(
                 ],
             }
         )
-    return result
+    return {
+        "items": result,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "has_more": offset + len(result) < total,
+    }
 
 
 @router.get("/charts/performance")
@@ -381,8 +401,8 @@ async def get_dashboard(
     from ainvestor.services.market_context_cache import get_market_context
 
     portfolio = await get_portfolio(db=db, profile=profile)
-    trades = await get_trades(limit=5, db=db, profile=profile)
-    decisions = await get_decisions(limit=5, db=db, profile=profile)
+    trades_resp = await get_trades(limit=20, offset=0, db=db, profile=profile)
+    decisions_resp = await get_decisions(limit=20, offset=0, db=db, profile=profile)
     token_usage = await get_ai_usage(db=db, profile=profile)
     market_context = await get_market_context(db, fresh=False)
     market_context["tickers"] = (market_context.get("tickers") or [])[:8]
@@ -392,8 +412,8 @@ async def get_dashboard(
     return {
         "profile": profile,
         "portfolio": portfolio,
-        "trades": trades,
-        "decisions": decisions,
+        "trades": trades_resp["items"],
+        "decisions": decisions_resp["items"],
         "token_usage": token_usage,
         "market_context": market_context,
     }

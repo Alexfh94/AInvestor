@@ -146,7 +146,7 @@ def get_trade_history(limit: int = 20) -> str:
     db = _get_db()
     try:
         mgr = PortfolioManager(db)
-        trades = mgr.get_trade_history(limit=limit)
+        trades, _ = mgr.get_trade_history(limit=limit)
         return json.dumps(
             [
                 {

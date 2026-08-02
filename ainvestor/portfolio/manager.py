@@ -292,15 +292,16 @@ class PortfolioManager:
         portfolio.kill_switch_active = active
         self.db.commit()
 
-    def get_trade_history(self, limit: int = 50) -> list[Trade]:
+    def get_trade_history(self, limit: int = 50, offset: int = 0) -> tuple[list[Trade], int]:
         portfolio = self.get_or_create_portfolio()
-        return (
+        q = (
             self.db.query(Trade)
             .filter(Trade.portfolio_id == portfolio.id)
             .order_by(Trade.executed_at.desc())
-            .limit(limit)
-            .all()
         )
+        total = q.count()
+        trades = q.offset(offset).limit(limit).all()
+        return trades, total
 
     def get_initial_value(self) -> float:
         portfolio = self.get_or_create_portfolio()

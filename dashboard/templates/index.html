@@ -146,6 +146,18 @@
         }
         .table-scroll table { min-width: 520px; }
         .table-scroll table.table-compact { min-width: 400px; }
+        .pagination {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+            margin-top: 0.75rem;
+            font-size: 0.85rem;
+        }
+        .pagination button:disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
+        }
 
         @media (max-width: 768px) {
             body { padding: 0.75rem; }
@@ -282,10 +294,12 @@
         <div class="card">
             <h2>Últimas operaciones</h2>
             <div id="trades-table"><p class="muted">Cargando…</p></div>
+            <div id="trades-pagination" class="pagination hidden"></div>
         </div>
         <div class="card">
             <h2>Decisiones IA</h2>
             <div id="decisions-table"><p class="muted">Cargando…</p></div>
+            <div id="decisions-pagination" class="pagination hidden"></div>
         </div>
     </div>
 
@@ -330,6 +344,11 @@
         let chartLibsLoading = null;
         let selectedProfile = 'extreme';
         let loadingDepth = 0;
+        const PAGE_SIZE = 20;
+        let tradesOffset = 0;
+        let decisionsOffset = 0;
+        let tradesTotal = 0;
+        let decisionsTotal = 0;
         const PROFILE_LABELS = { extreme: 'Extrema' };
 
         function loadScript(src) {
@@ -441,8 +460,8 @@
             try {
                 await loadPortfolio();
                 await Promise.all([
-                    loadTrades(),
-                    loadDecisions(),
+                    loadTrades(0),
+                    loadDecisions(0),
                     loadTokenUsage(),
                     loadMarketContext(),
                 ]);
@@ -540,17 +559,51 @@
             }
         }
 
-        async function loadTrades() {
+        function renderPagination(containerId, offset, total, loadFn) {
+            const el = document.getElementById(containerId);
+            if (!el) return;
+            if (total <= PAGE_SIZE) {
+                el.classList.add('hidden');
+                el.innerHTML = '';
+                return;
+            }
+            el.classList.remove('hidden');
+            const page = Math.floor(offset / PAGE_SIZE) + 1;
+            const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+            const from = total ? offset + 1 : 0;
+            const to = Math.min(offset + PAGE_SIZE, total);
+            el.innerHTML = `
+                <button class="secondary" id="${containerId}-prev">← Anterior</button>
+                <span class="muted">${from}–${to} de ${total} · pág. ${page}/${pages}</span>
+                <button class="secondary" id="${containerId}-next">Siguiente →</button>
+            `;
+            const prev = document.getElementById(`${containerId}-prev`);
+            const next = document.getElementById(`${containerId}-next`);
+            prev.disabled = offset <= 0;
+            next.disabled = offset + PAGE_SIZE >= total;
+            prev.onclick = () => loadFn(offset - PAGE_SIZE);
+            next.onclick = () => loadFn(offset + PAGE_SIZE);
+        }
+
+        async function loadTrades(offset = tradesOffset) {
             try {
-                const r = await fetch(`/api/trades?limit=5&${profileQuery()}`);
-                renderTrades(await r.json());
+                tradesOffset = offset;
+                const r = await fetch(`/api/trades?limit=${PAGE_SIZE}&offset=${offset}&${profileQuery()}`);
+                const data = await r.json();
+                tradesTotal = data.total ?? 0;
+                renderTrades(data.items || []);
+                renderPagination('trades-pagination', offset, tradesTotal, loadTrades);
             } catch (e) {}
         }
 
-        async function loadDecisions() {
+        async function loadDecisions(offset = decisionsOffset) {
             try {
-                const r = await fetch(`/api/decisions?limit=5&${profileQuery()}`);
-                renderDecisions(await r.json());
+                decisionsOffset = offset;
+                const r = await fetch(`/api/decisions?limit=${PAGE_SIZE}&offset=${offset}&${profileQuery()}`);
+                const data = await r.json();
+                decisionsTotal = data.total ?? 0;
+                renderDecisions(data.items || []);
+                renderPagination('decisions-pagination', offset, decisionsTotal, loadDecisions);
             } catch (e) {}
         }
 
