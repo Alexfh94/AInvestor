@@ -184,6 +184,23 @@ class CycleRun(Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class SignalSnapshot(Base):
+    __tablename__ = "signal_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    cycle_id: Mapped[str] = mapped_column(String(64), index=True)
+    profile: Mapped[str] = mapped_column(String(20), default="extreme", index=True)
+    symbol: Mapped[str] = mapped_column(String(20), index=True)
+    long_score: Mapped[int] = mapped_column(Integer, default=0)
+    short_score: Mapped[int] = mapped_column(Integer, default=0)
+    selected_side: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    adx: Mapped[float | None] = mapped_column(Float, nullable=True)
+    mtf_alignment: Mapped[bool] = mapped_column(Boolean, default=False)
+    funding_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    entry_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=app_now, index=True)
+
+
 class NewsRecord(Base):
     __tablename__ = "news_records"
 
@@ -299,6 +316,7 @@ def _migrate_utc_timestamps_to_madrid() -> None:
         "news_records": ["published_at", "captured_at"],
         "sentiment_records": ["captured_at"],
         "derivatives_records": ["captured_at"],
+        "signal_snapshots": ["created_at"],
         "stock_portfolios": ["created_at", "updated_at"],
         "stock_positions": ["opened_at", "closed_at"],
     }

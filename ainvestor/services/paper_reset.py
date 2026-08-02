@@ -14,6 +14,7 @@ from ainvestor.db.models import (
     PortfolioValueHistory,
     Position,
     RiskEvent,
+    SignalSnapshot,
     Trade,
 )
 from ainvestor.portfolio.profiles import PROFILE_AGGRESSIVE, PROFILE_CONSERVATIVE, PROFILES
@@ -29,6 +30,7 @@ TRADING_TABLES = (
     CycleRun,
     RiskEvent,
     PortfolioValueHistory,
+    SignalSnapshot,
 )
 
 

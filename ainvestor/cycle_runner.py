@@ -14,8 +14,7 @@ from ainvestor.collectors.market import MarketCollector
 from ainvestor.collectors.news import NewsCollector
 from ainvestor.collectors.sentiment import SentimentCollector
 from ainvestor.config import get_profile_ai_cycle_interval, get_settings, load_risk_config
-from ainvestor.db.models import AIDecision, CycleRun
-from ainvestor.engine.ai_agent import AIAgent, build_cycle_prompt
+from ainvestor.db.models import AIDecision, CycleRun, SignalSnapshot
 from ainvestor.engine.executor import TradeExecutor
 from ainvestor.engine.exit_rules import (
     mandatory_close_proposals,
@@ -23,11 +22,12 @@ from ainvestor.engine.exit_rules import (
     roe_take_profit_triggers,
     update_trailing_stops,
 )
-from ainvestor.engine.instrument_context import build_instrument_opportunities
+from ainvestor.engine.instrument_context import oi_delta_pct
 from ainvestor.engine.learning import DecisionLearning
 from ainvestor.engine.proposal_order import is_close_proposal, proposal_execution_key, sort_proposals_for_execution
 from ainvestor.engine.quant import QuantEngine
 from ainvestor.engine.risk import RiskManager
+from ainvestor.engine.signal_engine import SignalEngine
 from ainvestor.models.schemas import AssetClass, InstrumentType
 from ainvestor.portfolio.manager import PortfolioManager
 from ainvestor.portfolio.perp_simulator import FUNDING_INTERVAL_HOURS, PerpPaperSimulator
@@ -49,17 +49,16 @@ class CycleRunner:
         self.sentiment = SentimentCollector(db)
         self.derivatives = DerivativesCollector(db)
         self.macro = MacroCollector()
-        self.quant = QuantEngine()
+        self.quant = QuantEngine(profile=self.profile)
+        self.signal_engine = SignalEngine(profile=self.profile)
         self.portfolio_mgr = PortfolioManager(db, profile=self.profile)
         self.risk = RiskManager(db, profile=self.profile)
         self.executor = TradeExecutor(db, profile=self.profile)
-        self.ai = AIAgent()
         self.learning = DecisionLearning(db, profile=self.profile)
 
     async def run(self, cycle_id: str | None = None) -> dict:
         global _last_market_context
         cycle_id = cycle_id or PortfolioManager.new_cycle_id()
-        risk_config = load_risk_config(profile=self.profile)
 
         cycle_run = CycleRun(cycle_id=cycle_id, status="running", profile=self.profile)
         self.db.add(cycle_run)
@@ -95,40 +94,20 @@ class CycleRunner:
 
             self.learning.backfill_from_decisions()
             self.learning.evaluate_pending(prices)
-            learning_summary = self.learning.build_learning_summary()
 
-            instrument_context = build_instrument_opportunities(
-                prices,
-                deriv_snapshots,
+            oi_deltas: dict[str, float | None] = {}
+            for d in deriv_snapshots:
+                oi_deltas[d.symbol] = oi_delta_pct(self.db, d.symbol, d.open_interest)
+
+            evaluation = self.signal_engine.evaluate(
                 signals,
-                quant_map,
+                deriv_by_symbol,
                 snapshot,
-                self.profile,
-                db=self.db,
+                oi_delta_by_symbol=oi_deltas,
             )
+            decision = evaluation.decision
 
-            use_mcp = self.ai.settings.ai_use_mcp and bool(self.ai.settings.cursor_api_key)
-            prompt = build_cycle_prompt(
-                portfolio_summary=self._format_portfolio(snapshot),
-                market_summary=self._format_market(tickers),
-                signals_summary=self.quant.summarize(signals),
-                news_summary=self.news.summarize(news_items),
-                sentiment_summary=self.sentiment.summarize(
-                    sentiment_data, macro_ctx.btc_dominance
-                ),
-                risk_config=risk_config,
-                learning_summary=learning_summary,
-                macro_summary=self.macro.summarize(macro_ctx),
-                derivatives_summary=self.derivatives.summarize(deriv_snapshots, prices),
-                instrument_context=instrument_context,
-                quant_reference=self._format_quant_reference(signals, quant_map, risk_config),
-                market_status="crypto-only",
-                use_mcp=use_mcp,
-                profile=self.profile,
-                ai_cycle_interval_minutes=get_profile_ai_cycle_interval(self.profile),
-                risk_monitor_interval_minutes=get_settings().risk_monitor_interval,
-                price_tick_interval_seconds=get_settings().price_tick_interval_seconds,
-            )
+            self._persist_signal_snapshots(cycle_id, evaluation.snapshots, evaluation)
 
             if self.profile == PROFILE_EXTREME:
                 ctx = {
@@ -147,7 +126,8 @@ class CycleRunner:
 
                 persist_market_context(self.db, ctx)
 
-            decision, raw_response, run_id, token_usage = await self.ai.run_cycle(prompt)
+            raw_response = None
+            run_id = None
 
             approved_count = 0
             rejected_count = 0
@@ -224,20 +204,20 @@ class CycleRunner:
             ai_record = AIDecision(
                 cycle_id=cycle_id,
                 profile=self.profile,
-                model=self.ai.settings.effective_ai_model(),
+                model="signal_engine",
                 summary=decision.summary,
                 hold=decision.hold,
-                prompt_summary=prompt[:2000],
+                prompt_summary=self.quant.summarize(signals)[:2000],
                 raw_response=raw_response[:10000] if raw_response else None,
                 proposals_json=json.dumps([p.model_dump() for p in decision.proposals]),
                 approved_count=approved_count,
                 rejected_count=rejected_count,
                 run_id=run_id,
-                tokens_input=token_usage.input_tokens,
-                tokens_output=token_usage.output_tokens,
-                tokens_cache_read=token_usage.cache_read_tokens,
-                tokens_cache_write=token_usage.cache_write_tokens,
-                tokens_total=token_usage.total_tokens,
+                tokens_input=0,
+                tokens_output=0,
+                tokens_cache_read=0,
+                tokens_cache_write=0,
+                tokens_total=0,
             )
             self.db.add(ai_record)
 
@@ -261,7 +241,7 @@ class CycleRunner:
                 "approved": approved_count,
                 "rejected": rejected_count,
                 "run_id": run_id,
-                "token_usage": token_usage.to_dict(),
+                "token_usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
                 "total_value_usdt": snapshot.total_value_usdt,
             }
 
@@ -420,7 +400,7 @@ class CycleRunner:
         prices: dict[str, float],
         cycle_id: str,
     ) -> int:
-        """Ejecuta cierres obligatorios por ROE antes de llamar a la IA."""
+        """Ejecuta cierres obligatorios por ROE antes del ciclo de señales."""
         mandatory = mandatory_close_proposals(
             snapshot, signals_by_symbol, quant_map, self.profile
         )
@@ -456,6 +436,30 @@ class CycleRunner:
             logger.info("Mandatory exits executed: %d (%s)", executed, self.profile)
         return executed
 
+    def _persist_signal_snapshots(
+        self, cycle_id: str, snapshots: list[dict], evaluation
+    ) -> None:
+        for row in snapshots:
+            self.db.add(
+                SignalSnapshot(
+                    cycle_id=cycle_id,
+                    profile=self.profile,
+                    symbol=row["symbol"],
+                    long_score=row.get("long_score", 0),
+                    short_score=row.get("short_score", 0),
+                    selected_side=(
+                        evaluation.selected_side
+                        if row["symbol"] == evaluation.selected_symbol
+                        else None
+                    ),
+                    adx=row.get("adx"),
+                    mtf_alignment=row.get("mtf_alignment", False),
+                    funding_rate=row.get("funding_rate"),
+                    entry_reason=row.get("entry_reason"),
+                )
+            )
+        self.db.commit()
+
     def _format_quant_reference(
         self, signals, quant_map: dict[str, int], risk_config: dict
     ) -> str:
@@ -466,10 +470,9 @@ class CycleRunner:
             f"Divergence threshold: {threshold} pts | min conviction if diverging: {min_conv}",
         ]
         for s in signals:
-            qc = quant_map.get(s.symbol, s.conviction_score)
-            div = ""
             lines.append(
-                f"{s.symbol}: quant={qc} trend={s.trend} conviction_score={s.conviction_score}{div}"
+                f"{s.symbol}: L{s.long_score}/S{s.short_score} trend={s.trend} "
+                f"ADX={s.adx} MTF={'✓' if s.mtf_aligned else '✗'}"
             )
         return "\n".join(lines) if lines else "No quant reference."
 
@@ -495,8 +498,8 @@ class CycleRunner:
                 roe = f"{pos.roe_pct:+.1f}%" if pos.roe_pct is not None else "N/A"
                 liq = f"{pos.liq_distance_pct:.0f}%" if pos.liq_distance_pct is not None else "N/A"
                 exit_cfg = load_risk_config(profile=self.profile).get("exit_rules", {})
-                tp_roe = float(exit_cfg.get("take_profit_roe_pct", 6.0))
-                sl_roe = float(exit_cfg.get("stop_loss_roe_pct", -6.0))
+                tp_roe = float(exit_cfg.get("take_profit_roe_pct", 12.0))
+                sl_roe = float(exit_cfg.get("stop_loss_roe_pct", -8.0))
                 tick = get_settings().price_tick_interval_seconds
                 lines.append(
                     f"  {pos.symbol} [perpetual {side} {lev}x]: margin {margin:.2f} USDT, "

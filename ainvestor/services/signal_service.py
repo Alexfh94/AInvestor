@@ -20,7 +20,7 @@ async def collect_technical_signals(db: Session) -> list[TechnicalSignal]:
         if not mtf_data:
             logger.warning("No multi-timeframe data for signal computation")
             return []
-        return QuantEngine().analyze_all_multi(mtf_data)
+        return QuantEngine(profile="extreme").analyze_all_multi(mtf_data)
     except Exception as exc:
         logger.warning("Technical signal collection failed: %s", exc)
         return []
