@@ -98,13 +98,21 @@ class TradeExecutor:
             notional = margin * proposal.leverage
         close_pct = 100.0 if self.profile == PROFILE_EXTREME else proposal.amount_pct
 
-        def _stops_for_side() -> tuple[float, float]:
+        def _stops_for_side() -> tuple[float | None, float | None]:
             if proposal.position_side == "short":
-                stop = price * (1 + proposal.stop_loss_pct / 100)
-                tp = price * (1 - proposal.take_profit_pct / 100)
+                stop = price * (1 + proposal.stop_loss_pct / 100) if proposal.stop_loss_pct > 0 else None
+                tp = (
+                    price * (1 - proposal.take_profit_pct / 100)
+                    if proposal.take_profit_pct > 0
+                    else None
+                )
             else:
-                stop = price * (1 - proposal.stop_loss_pct / 100)
-                tp = price * (1 + proposal.take_profit_pct / 100)
+                stop = price * (1 - proposal.stop_loss_pct / 100) if proposal.stop_loss_pct > 0 else None
+                tp = (
+                    price * (1 + proposal.take_profit_pct / 100)
+                    if proposal.take_profit_pct > 0
+                    else None
+                )
             return stop, tp
 
         positions = self.portfolio_mgr.get_simulator().get_open_positions()

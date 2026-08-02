@@ -17,11 +17,6 @@ def _exit_cfg(profile: str) -> dict:
     return load_risk_config(profile=profile).get("exit_rules", {})
 
 
-def _target_tp_pct(profile: str) -> float:
-    stops = load_risk_config(profile=profile).get("stops", {})
-    return float(stops.get("target_take_profit_pct_perp", 1.2))
-
-
 def position_trend_aligned(side: str, signal: TechnicalSignal | None) -> bool:
     """True si la tendencia 1h apoya la dirección de la posición."""
     if signal is None:
@@ -41,15 +36,14 @@ def mandatory_close_proposals(
     profile: str,
 ) -> list[TradeProposal]:
     """
-    Cierres obligatorios antes del ciclo IA.
+    Cierres obligatorios antes del ciclo.
 
-    - Beneficio: ROE >= take_profit_roe_pct (12% ≈ 10% neto tras fees a 10x).
-    - Pérdida: ROE <= stop_loss_roe_pct — corte incondicional (sin depender de quant).
+    - Beneficio: ROE >= take_profit_roe_pct (12% ≈ 10% neto tras fees a 20x).
+    - Pérdida: ROE <= stop_loss_roe_pct — corte incondicional.
     """
     cfg = _exit_cfg(profile)
     profit_roe = float(cfg.get("take_profit_roe_pct", 12.0))
     loss_roe = float(cfg.get("stop_loss_roe_pct", -8.0))
-    target_tp = _target_tp_pct(profile)
 
     proposals: list[TradeProposal] = []
     for pos in snapshot.positions:
@@ -60,13 +54,13 @@ def mandatory_close_proposals(
             continue
 
         side = getattr(pos, "position_side", "long") or "long"
-        lev = getattr(pos, "leverage", 10) or 10
+        lev = getattr(pos, "leverage", 20) or 20
 
         reason = ""
         if roe >= profit_roe:
             reason = (
                 f"ROE {roe:+.1f}% ≥ objetivo {profit_roe:.0f}% "
-                f"(~10% neto tras fees a 10x) — take profit obligatorio"
+                f"(~10% neto tras fees a 20x) — take profit obligatorio"
             )
         elif roe <= loss_roe:
             reason = (
@@ -84,7 +78,7 @@ def mandatory_close_proposals(
                 symbol=pos.symbol,
                 amount_pct=100.0,
                 stop_loss_pct=abs(loss_roe) / lev,
-                take_profit_pct=target_tp,
+                take_profit_pct=0.0,
                 conviction=90,
                 reasoning=reason,
                 instrument_type=InstrumentType.PERPETUAL,

@@ -131,17 +131,26 @@ class TechnicalSignal(BaseModel):
     rsi: float | None = None
     ma_fast: float | None = None
     ma_slow: float | None = None
+    ema_fast: float | None = None
+    ema_slow: float | None = None
     macd: float | None = None
     macd_signal: float | None = None
+    macd_histogram: float | None = None
+    adx: float | None = None
     volume_ratio: float | None = None
     atr: float | None = None
     atr_pct: float | None = None
     trend_1h: Literal["bullish", "bearish", "neutral"] = "neutral"
     trend_4h: Literal["bullish", "bearish", "neutral"] | None = None
     trend_1d: Literal["bullish", "bearish", "neutral"] | None = None
+    mtf_aligned: bool = False
     session_change_pct: float | None = None
+    long_score: int = Field(ge=0, le=100, default=0)
+    short_score: int = Field(ge=0, le=100, default=0)
     conviction_score: int = Field(ge=0, le=100, default=50)
     trend: Literal["bullish", "bearish", "neutral"] = "neutral"
+    tradable: bool = False
+    entry_reason: str = ""
 
 
 class RiskCheckResult(BaseModel):

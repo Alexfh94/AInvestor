@@ -170,8 +170,14 @@ class RiskManager:
         max_lev = int(deriv.get("max_leverage", 2))
         mifid_cap = int(deriv.get("mifid_retail_leverage_cap", 2))
         cap = min(max_lev, mifid_cap)
+        is_opening = (
+            (proposal.action == DecisionAction.BUY and proposal.position_side == "long")
+            or (proposal.action == DecisionAction.SELL and proposal.position_side == "short")
+        )
         if proposal.leverage > cap:
             reasons.append(f"Leverage {proposal.leverage}x exceeds cap {cap}x")
+        if self.profile == PROFILE_EXTREME and is_opening and proposal.leverage != cap:
+            reasons.append(f"Extreme profile requires leverage {cap}x (got {proposal.leverage}x)")
 
         portfolio_id = portfolio.portfolio_id
         open_perps = (
@@ -184,10 +190,6 @@ class RiskManager:
             .scalar()
         ) or 0
 
-        is_opening = (
-            (proposal.action == DecisionAction.BUY and proposal.position_side == "long")
-            or (proposal.action == DecisionAction.SELL and proposal.position_side == "short")
-        )
         existing_perp = next(
             (
                 p
@@ -207,6 +209,7 @@ class RiskManager:
                     "Derivatives data (funding/OI) unavailable — perpetual open blocked"
                 )
             reasons.extend(self._check_extreme_all_in(proposal, is_close=False))
+            reasons.extend(self._check_direction_alignment(proposal, signal))
             reasons.extend(self._check_trend_alignment(proposal, signal))
             reasons.extend(self._check_tp_reachability(proposal, signal))
             reasons.extend(
@@ -266,6 +269,25 @@ class RiskManager:
         if abs(proposal.stop_loss_pct - target_sl) > 0.01:
             proposal.stop_loss_pct = target_sl
 
+    def _check_direction_alignment(self, proposal: TradeProposal, signal) -> list[str]:
+        """La dirección propuesta debe coincidir con el score dominante del quant."""
+        if signal is None:
+            return []
+        long_score = getattr(signal, "long_score", 0) or 0
+        short_score = getattr(signal, "short_score", 0) or 0
+        side = proposal.position_side or "long"
+        if side == "long" and long_score < short_score:
+            return [
+                f"Long blocked: short_score {short_score} > long_score {long_score} on {proposal.symbol}"
+            ]
+        if side == "short" and short_score < long_score:
+            return [
+                f"Short blocked: long_score {long_score} > short_score {short_score} on {proposal.symbol}"
+            ]
+        if not getattr(signal, "tradable", True):
+            return [f"Signal not tradable on {proposal.symbol} (ADX/MTF filter)"]
+        return []
+
     def _check_trend_alignment(self, proposal: TradeProposal, signal) -> list[str]:
         """Bloquea aperturas cuya dirección contradiga la tendencia 4h."""
         if signal is None:
@@ -285,18 +307,19 @@ class RiskManager:
         return []
 
     def _check_tp_reachability(self, proposal: TradeProposal, signal) -> list[str]:
-        """Bloquea aperturas si la volatilidad (ATR 1h) hace inalcanzable el TP objetivo."""
+        """Bloquea aperturas si la volatilidad (ATR 1h) es insuficiente para cubrir fees."""
         if signal is None:
             return []
         atr_pct = getattr(signal, "atr_pct", None)
         if atr_pct is None or atr_pct <= 0:
             return []
-        stops_cfg = self.config.get("stops", {})
-        target_tp = float(stops_cfg.get("target_take_profit_pct_perp", 1.2))
-        if atr_pct * 3 < target_tp:
+        exit_cfg = self.config.get("exit_rules", {})
+        tp_roe = float(exit_cfg.get("take_profit_roe_pct", 12.0))
+        min_price_move = tp_roe / proposal.leverage if proposal.leverage > 0 else tp_roe
+        if atr_pct * 2 < min_price_move:
             return [
                 f"ATR 1h {atr_pct:.2f}% too low on {proposal.symbol} — "
-                f"TP {target_tp:.1f}% unreachable within horizon"
+                f"TP ROE {tp_roe:.0f}% ({min_price_move:.2f}% price) unreachable"
             ]
         return []
 
@@ -626,41 +649,41 @@ class RiskManager:
 
         if stops_cfg["require_stop_loss"] and proposal.stop_loss_pct <= 0:
             reasons.append("Stop-loss is required")
-        if stops_cfg["require_take_profit"] and proposal.take_profit_pct <= 0:
+        if stops_cfg.get("require_take_profit", False) and proposal.take_profit_pct <= 0:
             reasons.append("Take-profit is required")
 
         if proposal.stop_loss_pct > stops_cfg["max_stop_loss_pct"]:
             reasons.append(f"Stop-loss exceeds max {stops_cfg['max_stop_loss_pct']}%")
 
-        min_tp = float(stops_cfg.get("min_take_profit_pct", 1.0))
         if is_perp:
-            min_tp = float(stops_cfg.get("min_take_profit_pct_perp", 1.0))
-            target_tp = float(stops_cfg.get("target_take_profit_pct_perp", 1.2))
-            if proposal.take_profit_pct < min_tp:
-                proposal.take_profit_pct = target_tp
-        if proposal.take_profit_pct < min_tp:
-            reasons.append(f"Take-profit below minimum ({min_tp}%)")
-
-        if is_perp:
-            max_tp = float(stops_cfg.get("max_take_profit_pct_perp", 1.5))
-            if proposal.take_profit_pct > max_tp:
+            max_tp = float(stops_cfg.get("max_take_profit_pct_perp", 0.0))
+            if max_tp > 0 and proposal.take_profit_pct > max_tp:
                 reasons.append(
                     f"Take-profit {proposal.take_profit_pct:.2f}% exceeds max {max_tp}% for perps"
                 )
+        else:
+            min_tp = float(stops_cfg.get("min_take_profit_pct", 1.0))
+            if proposal.take_profit_pct < min_tp:
+                reasons.append(f"Take-profit below minimum ({min_tp}%)")
 
         opt = self.config.get("profit_optimization", {})
         fee_multiplier = float(opt.get("min_tp_fee_multiplier", 2.0))
         round_trip_pct = (fee_rate * 2) * 100
-        if is_perp:
+        if is_perp and stops_cfg.get("require_take_profit", False):
             perp_floor = float(stops_cfg.get("min_take_profit_pct_perp", 0.35))
             min_net_gain_pct = max(perp_floor, round_trip_pct * fee_multiplier)
-        else:
+            if proposal.take_profit_pct < min_net_gain_pct:
+                reasons.append(
+                    f"Take-profit {proposal.take_profit_pct:.2f}% below minimum net edge "
+                    f"({min_net_gain_pct:.2f}% after round-trip fees)"
+                )
+        elif not is_perp:
             min_net_gain_pct = round_trip_pct * fee_multiplier + 0.5
-        if proposal.take_profit_pct < min_net_gain_pct:
-            reasons.append(
-                f"Take-profit {proposal.take_profit_pct:.2f}% below minimum net edge "
-                f"({min_net_gain_pct:.2f}% after round-trip fees)"
-            )
+            if proposal.take_profit_pct < min_net_gain_pct:
+                reasons.append(
+                    f"Take-profit {proposal.take_profit_pct:.2f}% below minimum net edge "
+                    f"({min_net_gain_pct:.2f}% after round-trip fees)"
+                )
 
         reasons.extend(self._check_loss_limits(portfolio, limits_cfg))
         reasons.extend(self._check_trade_count_limits(limits_cfg, portfolio.portfolio_id))

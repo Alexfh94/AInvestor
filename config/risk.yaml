@@ -1,6 +1,6 @@
 # Risk configuration - versioned and auditable
 # Extreme: all-in perpetuals, max leverage paper stress-test.
-version: "5.0"
+version: "6.0"
 
 fees:
   exchange: binance
@@ -11,23 +11,27 @@ fees:
 
 stops:
   require_stop_loss: true
-  require_take_profit: true
+  require_take_profit: false
   max_stop_loss_pct: 15.0
   min_take_profit_pct: 1.0
-  min_take_profit_pct_perp: 1.0
-  target_take_profit_pct_perp: 1.2
-  max_take_profit_pct_perp: 1.5
+  min_take_profit_pct_perp: 0.0
+  target_take_profit_pct_perp: 0.0
+  max_take_profit_pct_perp: 0.0
   use_atr_suggestions: true
+
+signal_engine:
+  min_entry_score: 72
+  min_adx: 22
 
 profit_optimization:
   min_tp_fee_multiplier: 2.0
   extreme_all_in_amount_pct: 100.0
 
 exit_rules:
-  take_profit_roe_pct: 6.0
-  stop_loss_roe_pct: -6.0
-  trailing_activate_roe_pct: 4.0
-  trailing_distance_roe_pct: 2.0
+  take_profit_roe_pct: 12.0
+  stop_loss_roe_pct: -8.0
+  trailing_activate_roe_pct: 8.0
+  trailing_distance_roe_pct: 4.0
   reentry_cooldown_cycles: 1
   reentry_cooldown_after_loss_cycles: 4
   min_hold_cycles: 4
@@ -85,8 +89,8 @@ profiles:
     ai_validation:
       conviction_divergence_threshold: 60
       min_conviction_on_divergence: 45
-      min_conviction: 60
-      min_quant_conviction_entry: 60
+      min_conviction: 72
+      min_quant_conviction_entry: 72
     whitelist:
       pairs:
         - BTC/USDT

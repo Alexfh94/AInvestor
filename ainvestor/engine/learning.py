@@ -430,6 +430,11 @@ class DecisionLearning:
         if not record.symbol:
             return OUTCOME_NEUTRAL, "Sin símbolo", 0.0, 0.0
 
+        if record.execution_status == "approved" and record.instrument_type == "perpetual":
+            trade_result = self._evaluate_from_closed_trade(record)
+            if trade_result is not None:
+                return trade_result
+
         eval_price = prices.get(record.symbol, record.price_at_decision)
         if record.price_at_decision <= 0:
             return OUTCOME_NEUTRAL, "Sin precio de referencia", 0.0, eval_price
@@ -448,6 +453,42 @@ class DecisionLearning:
             return OUTCOME_NEUTRAL, "Compra con movimiento lateral", return_pct, eval_price
 
         return self._evaluate_rejected(record, prices)
+
+    def _evaluate_from_closed_trade(
+        self, record: DecisionOutcome
+    ) -> tuple[str, str, float, float] | None:
+        """Usa PnL realizado del trade de cierre si existe tras la decisión."""
+        portfolio = (
+            self.db.query(Portfolio)
+            .filter(Portfolio.profile == self.profile)
+            .first()
+        )
+        if portfolio is None or not record.symbol:
+            return None
+
+        close_trade = (
+            self.db.query(Trade)
+            .filter(
+                Trade.portfolio_id == portfolio.id,
+                Trade.symbol == record.symbol,
+                Trade.trade_action == "close",
+                Trade.executed_at >= record.created_at,
+                Trade.realized_pnl_usdt.isnot(None),
+            )
+            .order_by(Trade.executed_at.asc())
+            .first()
+        )
+        if close_trade is None:
+            return None
+
+        pnl = close_trade.realized_pnl_usdt or 0.0
+        roe = close_trade.pnl_pct_roe or 0.0
+        eval_price = close_trade.price
+        if pnl > 0:
+            return OUTCOME_GOOD, f"PnL realizado +{pnl:.2f} USDT (ROE {roe:+.1f}%)", roe, eval_price
+        if pnl < 0:
+            return OUTCOME_BAD, f"PnL realizado {pnl:.2f} USDT (ROE {roe:+.1f}%)", roe, eval_price
+        return OUTCOME_NEUTRAL, f"PnL realizado {pnl:.2f} USDT", roe, eval_price
 
     def _evaluate_sell(
         self, record: DecisionOutcome, prices: dict[str, float]

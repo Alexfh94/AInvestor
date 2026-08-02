@@ -20,7 +20,7 @@ from ainvestor.models.schemas import DerivativesSnapshot, PortfolioSnapshot, Tec
 
 
 
-def _oi_delta_pct(db: Session | None, symbol: str, current_oi: float) -> float | None:
+def oi_delta_pct(db: Session | None, symbol: str, current_oi: float) -> float | None:
 
     if db is None or current_oi <= 0:
 
@@ -107,7 +107,7 @@ def build_instrument_opportunities(
 
         f"ALL-IN: amount_pct=100 on every open and close (full margin / full exit).",
 
-        f"Stop-loss minimum: 100/leverage % (e.g. 20x → 5% SL).",
+        f"Stop-loss automático: -8% ROE (0.4% precio a 20x). TP: +12% ROE (solo monitor ROE).",
 
         f"For perpetuals: amount_pct = margin % of balance; notional = margin × leverage",
 
@@ -171,7 +171,7 @@ def build_instrument_opportunities(
 
             bias = "longs pay" if deriv.funding_rate > 0 else "shorts pay"
 
-            oi_delta = _oi_delta_pct(db, symbol, deriv.open_interest)
+            oi_delta = oi_delta_pct(db, symbol, deriv.open_interest)
 
             parts.append(
 
