@@ -79,7 +79,7 @@ def test_signal_engine_selects_best_setup():
         {"BTC/USDT": _deriv("BTC/USDT", price)},
         _empty_snapshot(),
     )
-    if signal.tradable and max(signal.long_score, signal.short_score) >= 72:
+    if signal.tradable and max(signal.long_score, signal.short_score) >= 60:
         assert evaluation.decision.hold is False
         assert len(evaluation.decision.proposals) == 1
         p = evaluation.decision.proposals[0]

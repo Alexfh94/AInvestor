@@ -5,6 +5,7 @@ import logging
 from dataclasses import dataclass, field
 
 from ainvestor.config import load_risk_config
+from ainvestor.engine.exit_rules import trend_reversal_close_proposal
 from ainvestor.models.schemas import (
     CycleDecision,
     DecisionAction,
@@ -38,11 +39,12 @@ class SignalEngine:
         self.config = load_risk_config(profile=profile)
         signal_cfg = self.config.get("signal_engine", {})
         self.min_entry_score = int(signal_cfg.get("min_entry_score", 72))
+        self.min_adx = int(signal_cfg.get("min_adx", 18))
         self.required_leverage = int(
             self.config.get("derivatives", {}).get("max_leverage", 20)
         )
         exit_cfg = self.config.get("exit_rules", {})
-        self.stop_loss_roe = abs(float(exit_cfg.get("stop_loss_roe_pct", -8.0)))
+        self.stop_loss_roe = abs(float(exit_cfg.get("stop_loss_roe_pct", -16.0)))
 
     def evaluate(
         self,
@@ -86,6 +88,22 @@ class SignalEngine:
         ]
 
         if open_perps:
+            pos = open_perps[0]
+            sig = next((s for s in signals if s.symbol == pos.symbol), None)
+            reversal = trend_reversal_close_proposal(pos, sig, self.profile)
+            if reversal:
+                summary = (
+                    f"Cierre {pos.symbol} {getattr(pos, 'position_side', 'long')}: "
+                    f"{reversal.reasoning}"
+                )
+                return SignalEvaluation(
+                    decision=CycleDecision(hold=False, summary=summary, proposals=[reversal]),
+                    signals=signals,
+                    selected_symbol=pos.symbol,
+                    selected_side=getattr(pos, "position_side", "long"),
+                    selected_score=reversal.conviction,
+                    snapshots=snapshots,
+                )
             return SignalEvaluation(
                 decision=CycleDecision(
                     hold=True,
@@ -102,7 +120,7 @@ class SignalEngine:
                     hold=True,
                     summary=(
                         f"Sin setup con score ≥ {self.min_entry_score} "
-                        f"(ADX+MTF 3/3 requeridos). Permanece en cash."
+                        f"(ADX≥{self.min_adx}, MTF 1h+4h requeridos). Permanece en cash."
                     ),
                     proposals=[],
                 ),
@@ -191,7 +209,8 @@ class SignalEngine:
         roe_str = f"{roe:+.1f}%" if roe is not None else "N/A"
         return (
             f"Posición abierta {position.symbol} {side} — ROE {roe_str}. "
-            f"Mantener hasta TP/SL/trailing automático."
+            f"Mantener hasta TP (+24% ROE) o SL (−16% ROE); "
+            f"cierre anticipado solo si reversión de tendencia confirmada."
         )
 
     def _snapshot_row(self, sig: TechnicalSignal, funding_rate: float) -> dict:

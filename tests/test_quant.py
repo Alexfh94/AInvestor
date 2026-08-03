@@ -58,18 +58,21 @@ def test_directional_scoring():
         assert signal.long_score >= signal.short_score or signal.adx < quant.min_adx
 
 
-def test_mtf_alignment():
+def test_mtf_core_alignment():
     quant = QuantEngine(profile="extreme")
-    ohlcv = _generate_ohlcv(100, trend=0.002)
+    # Tendencia alcista fuerte y estable para alinear 1h y 4h sin ruido aleatorio.
+    ohlcv = []
+    price = 50000.0
+    for i in range(100):
+        price *= 1.003
+        ohlcv.append([i * 3600000, price * 0.999, price * 1.002, price * 0.998, price, 1000.0])
     signal = quant.analyze_multi_timeframe(
         "BTC/USDT", {"1h": ohlcv, "4h": ohlcv, "1d": ohlcv}
     )
-    trends = [signal.trend_1h, signal.trend_4h, signal.trend_1d]
-    non_neutral = [t for t in trends if t and t != "neutral"]
-    if len(non_neutral) >= 3 and all(t == non_neutral[0] for t in non_neutral):
-        assert signal.mtf_aligned is True
+    assert signal.trend_1h == signal.trend_4h
+    assert signal.trend_1h in ("bullish", "bearish")
+    assert signal.mtf_aligned is True
     assert signal.trend_4h is not None
-    assert signal.trend_1d is not None
 
 
 def test_summarize():

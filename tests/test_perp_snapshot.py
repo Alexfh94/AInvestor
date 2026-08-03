@@ -147,11 +147,11 @@ def test_risk_perp_validates_margin_not_notional(db_session):
     assert result.approved is True
 
 
-def test_stop_loss_inverted_for_short(db_session):
+def test_perp_stop_loss_uses_roe_not_price(db_session):
+    from ainvestor.engine.exit_rules import roe_stop_loss_triggers
     from ainvestor.models.schemas import PositionSnapshot
 
     portfolio = db_session.query(Portfolio).first()
-    risk = RiskManager(db_session, profile=PROFILE_EXTREME)
     snap = PortfolioSnapshot(
         mode=TradingMode.PAPER,
         profile=PROFILE_EXTREME,
@@ -175,9 +175,10 @@ def test_stop_loss_inverted_for_short(db_session):
                 instrument_type="perpetual",
                 position_side="short",
                 leverage=5,
+                roe_pct=-17.0,
             )
         ],
         kill_switch_active=False,
     )
-    triggers = risk.check_stop_loss_take_profit(snap)
-    assert any(t[0] == "ETH/USDT" for t in triggers)
+    triggers = roe_stop_loss_triggers(snap, PROFILE_EXTREME)
+    assert triggers == [("ETH/USDT", 2050.0)]

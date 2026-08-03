@@ -17,10 +17,11 @@ from ainvestor.config import get_profile_ai_cycle_interval, get_settings, load_r
 from ainvestor.db.models import AIDecision, CycleRun, SignalSnapshot
 from ainvestor.engine.executor import TradeExecutor
 from ainvestor.engine.exit_rules import (
+    collect_price_stop_triggers,
     mandatory_close_proposals,
+    normalize_open_perp_stops,
     roe_stop_loss_triggers,
     roe_take_profit_triggers,
-    update_trailing_stops,
 )
 from ainvestor.engine.instrument_context import oi_delta_pct
 from ainvestor.engine.learning import DecisionLearning
@@ -177,7 +178,10 @@ class CycleRunner:
                 if check.approved:
                     close_reason = None
                     if is_close_proposal(proposal, snapshot):
-                        close_reason = "ai_discretionary"
+                        if proposal.reasoning and "Reversión" in proposal.reasoning:
+                            close_reason = "trend_reversal"
+                        else:
+                            close_reason = "ai_discretionary"
                     success = await self.executor.execute_approved(
                         check, price, cycle_id, funding_rate=funding_rate, close_reason=close_reason
                     )
@@ -263,22 +267,11 @@ class CycleRunner:
         triggers: list[tuple[str, str, float, str]] = []
         seen: set[str] = set()
 
-        for pos in snapshot.positions:
-            side = getattr(pos, "position_side", "long") or "long"
-            if side == "short":
-                if pos.stop_loss and pos.current_price >= pos.stop_loss:
-                    triggers.append((pos.symbol, "sell", pos.current_price, "risk_sl"))
-                    seen.add(pos.symbol)
-                elif pos.take_profit and pos.current_price <= pos.take_profit:
-                    triggers.append((pos.symbol, "sell", pos.current_price, "risk_tp"))
-                    seen.add(pos.symbol)
-            else:
-                if pos.stop_loss and pos.current_price <= pos.stop_loss:
-                    triggers.append((pos.symbol, "sell", pos.current_price, "risk_sl"))
-                    seen.add(pos.symbol)
-                elif pos.take_profit and pos.current_price >= pos.take_profit:
-                    triggers.append((pos.symbol, "sell", pos.current_price, "risk_tp"))
-                    seen.add(pos.symbol)
+        for symbol, action, price, reason in collect_price_stop_triggers(
+            snapshot, self.profile
+        ):
+            triggers.append((symbol, action, price, reason))
+            seen.add(symbol)
 
         for symbol, price in roe_take_profit_triggers(snapshot, self.profile):
             if symbol not in seen:
@@ -309,8 +302,8 @@ class CycleRunner:
 
         liquidated: list[str] = []
         positions = self.portfolio_mgr.get_simulator().get_open_positions()
-        trailing_updated = update_trailing_stops(positions, prices, self.profile)
-        if trailing_updated:
+        stops_normalized = normalize_open_perp_stops(positions, self.profile)
+        if stops_normalized:
             self.db.commit()
 
         for pos in positions:
@@ -343,7 +336,7 @@ class CycleRunner:
             "profile": self.profile,
             "stop_triggers": executed,
             "liquidated": liquidated,
-            "trailing_stops_updated": trailing_updated,
+            "trailing_stops_updated": stops_normalized,
         }
 
     async def run_drawdown_check(self) -> dict:
@@ -498,8 +491,8 @@ class CycleRunner:
                 roe = f"{pos.roe_pct:+.1f}%" if pos.roe_pct is not None else "N/A"
                 liq = f"{pos.liq_distance_pct:.0f}%" if pos.liq_distance_pct is not None else "N/A"
                 exit_cfg = load_risk_config(profile=self.profile).get("exit_rules", {})
-                tp_roe = float(exit_cfg.get("take_profit_roe_pct", 12.0))
-                sl_roe = float(exit_cfg.get("stop_loss_roe_pct", -8.0))
+                tp_roe = float(exit_cfg.get("take_profit_roe_pct", 24.0))
+                sl_roe = float(exit_cfg.get("stop_loss_roe_pct", -16.0))
                 tick = get_settings().price_tick_interval_seconds
                 lines.append(
                     f"  {pos.symbol} [perpetual {side} {lev}x]: margin {margin:.2f} USDT, "

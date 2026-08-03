@@ -123,6 +123,7 @@ def load_risk_config(path: Path | None = None, profile: str | None = None) -> di
     for key in (
         "fees",
         "stops",
+        "signal_engine",
         "profit_optimization",
         "exit_rules",
         "allocation",

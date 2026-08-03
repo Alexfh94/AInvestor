@@ -258,13 +258,13 @@ class RiskManager:
     def _auto_adjust_perp_stop_loss(self, proposal: TradeProposal) -> None:
         """Fija el SL de perps al equivalente de stop_loss_roe_pct en precio.
 
-        A 10x con stop -8% ROE → SL a 0.8% de precio: corta la pérdida en -8% de
+        A 20x con stop -16% ROE → SL a 0.8% de precio: corta la pérdida en -16% de
         margen en vez de dejarla correr hasta liquidación.
         """
         if proposal.leverage <= 0:
             return
         exit_cfg = self.config.get("exit_rules", {})
-        stop_roe = abs(float(exit_cfg.get("stop_loss_roe_pct", -8.0)))
+        stop_roe = abs(float(exit_cfg.get("stop_loss_roe_pct", -16.0)))
         liq_pct = 100.0 / proposal.leverage
         target_sl = min(stop_roe / proposal.leverage, liq_pct)
         if abs(proposal.stop_loss_pct - target_sl) > 0.01:
@@ -324,7 +324,7 @@ class RiskManager:
         if atr_pct is None or atr_pct <= 0:
             return []
         exit_cfg = self.config.get("exit_rules", {})
-        tp_roe = float(exit_cfg.get("take_profit_roe_pct", 12.0))
+        tp_roe = float(exit_cfg.get("take_profit_roe_pct", 24.0))
         min_price_move = tp_roe / proposal.leverage if proposal.leverage > 0 else tp_roe
         if atr_pct * 2 < min_price_move:
             return [
@@ -417,7 +417,7 @@ class RiskManager:
         """Anti-churn: bloquea cierres discrecionales tempranos con ROE en [-4%, +8%).
 
         Banda asimétrica: por debajo de -4% la IA puede cortar (tesis rota); por
-        encima de +8% actúan trailing y TP. Los cortes automáticos (+12% / -8% ROE)
+        Los cortes automáticos (+24% / -16% ROE)
         quedan fuera de la banda y no se bloquean.
         """
         exit_cfg = self.config.get("exit_rules", {})
@@ -801,20 +801,14 @@ class RiskManager:
     def check_stop_loss_take_profit(
         self, portfolio: PortfolioSnapshot
     ) -> list[tuple[str, str, float]]:
-        triggers: list[tuple[str, str, float]] = []
-        for pos in portfolio.positions:
-            side = getattr(pos, "position_side", "long") or "long"
-            if side == "short":
-                if pos.stop_loss and pos.current_price >= pos.stop_loss:
-                    triggers.append((pos.symbol, "sell", pos.current_price))
-                elif pos.take_profit and pos.current_price <= pos.take_profit:
-                    triggers.append((pos.symbol, "sell", pos.current_price))
-            else:
-                if pos.stop_loss and pos.current_price <= pos.stop_loss:
-                    triggers.append((pos.symbol, "sell", pos.current_price))
-                elif pos.take_profit and pos.current_price >= pos.take_profit:
-                    triggers.append((pos.symbol, "sell", pos.current_price))
-        return triggers
+        from ainvestor.engine.exit_rules import collect_price_stop_triggers
+
+        return [
+            (symbol, action, price)
+            for symbol, action, price, _reason in collect_price_stop_triggers(
+                portfolio, self.profile
+            )
+        ]
 
     def should_activate_kill_switch(self, portfolio: PortfolioSnapshot) -> bool:
         initial = self._initial_for_portfolio(portfolio)

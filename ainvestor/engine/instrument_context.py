@@ -84,6 +84,10 @@ def build_instrument_opportunities(
     min_div_conv = int(ai_cfg.get("min_conviction_on_divergence", 80))
 
     max_lev = int(deriv_cfg.get("max_leverage", 10))
+    exit_cfg = risk_config.get("exit_rules", {})
+    sl_roe = abs(float(exit_cfg.get("stop_loss_roe_pct", -16.0)))
+    tp_roe = float(exit_cfg.get("take_profit_roe_pct", 24.0))
+    sl_price_pct = sl_roe / max_lev
 
 
 
@@ -107,7 +111,8 @@ def build_instrument_opportunities(
 
         f"ALL-IN: amount_pct=100 on every open and close (full margin / full exit).",
 
-        f"Stop-loss automático: -8% ROE (0.4% precio a 20x). TP: +12% ROE (solo monitor ROE).",
+        f"Stop-loss automático: -{sl_roe:.0f}% ROE ({sl_price_pct:.1f}% precio a {max_lev}x). "
+        f"TP: +{tp_roe:.0f}% ROE (solo monitor ROE).",
 
         f"For perpetuals: amount_pct = margin % of balance; notional = margin × leverage",
 

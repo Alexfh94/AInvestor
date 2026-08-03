@@ -17,6 +17,167 @@ def _exit_cfg(profile: str) -> dict:
     return load_risk_config(profile=profile).get("exit_rules", {})
 
 
+def is_loss_stop_price(
+    *,
+    position_side: str,
+    entry_price: float,
+    stop_loss: float,
+) -> bool:
+    """True si stop_loss es el SL de pérdida inicial (por debajo/encima de entrada)."""
+    if position_side == "long":
+        return stop_loss <= entry_price
+    return stop_loss >= entry_price
+
+
+def perp_loss_stop_price(
+    entry_price: float,
+    position_side: str,
+    leverage: int,
+    profile: str,
+) -> float:
+    """Precio de stop-loss de pérdida fijo (siempre por debajo/encima de la entrada)."""
+    loss_roe = abs(float(_exit_cfg(profile).get("stop_loss_roe_pct", -16.0)))
+    sl_price_pct = loss_roe / max(leverage, 1)
+    if position_side == "long":
+        return entry_price * (1 - sl_price_pct / 100)
+    return entry_price * (1 + sl_price_pct / 100)
+
+
+def normalize_perp_stop_loss(position, profile: str) -> bool:
+    """
+    Corrige stops de perps que quedaron en zona de beneficio (trailing legacy).
+    Devuelve True si se actualizó el stop en BD.
+    """
+    if getattr(position, "instrument_type", "spot") != "perpetual":
+        return False
+    entry = position.entry_price
+    if not entry:
+        return False
+    side = getattr(position, "position_side", "long") or "long"
+    lev = int(getattr(position, "leverage", 20) or 20)
+    target = perp_loss_stop_price(entry, side, lev, profile)
+    if position.stop_loss is None:
+        position.stop_loss = target
+        return True
+    if not is_loss_stop_price(
+        position_side=side, entry_price=entry, stop_loss=position.stop_loss
+    ):
+        position.stop_loss = target
+        return True
+    return False
+
+
+def normalize_open_perp_stops(positions: list, profile: str) -> int:
+    return sum(1 for pos in positions if normalize_perp_stop_loss(pos, profile))
+
+
+def collect_price_stop_triggers(
+    snapshot: PortfolioSnapshot,
+    profile: str,
+) -> list[tuple[str, str, float, str]]:
+    """
+    Disparos por precio vs stop_loss/take_profit.
+
+    Perps: no usan SL/TP por precio — solo salidas por ROE (TP/SL) en el monitor.
+    Spot: mantiene stops por precio.
+    """
+    triggers: list[tuple[str, str, float, str]] = []
+
+    for pos in snapshot.positions:
+        if getattr(pos, "instrument_type", "spot") == "perpetual":
+            continue
+        side = getattr(pos, "position_side", "long") or "long"
+        mark = pos.current_price
+        if not mark:
+            continue
+        if side == "short":
+            if pos.stop_loss and mark >= pos.stop_loss:
+                triggers.append((pos.symbol, "sell", mark, "risk_sl"))
+            elif pos.take_profit and mark <= pos.take_profit:
+                triggers.append((pos.symbol, "sell", mark, "risk_tp"))
+        else:
+            if pos.stop_loss and mark <= pos.stop_loss:
+                triggers.append((pos.symbol, "sell", mark, "risk_sl"))
+            elif pos.take_profit and mark >= pos.take_profit:
+                triggers.append((pos.symbol, "sell", mark, "risk_tp"))
+    return triggers
+
+
+def trend_reversal_close_proposal(
+    position,
+    signal: TechnicalSignal | None,
+    profile: str,
+) -> TradeProposal | None:
+    """
+    Cierre anticipado solo si la señal contraria es muy fuerte (reversión de tendencia).
+    No cierra en beneficio pequeño: solo cuando el quant indica riesgo claro de pérdida.
+    """
+    if signal is None:
+        return None
+    cfg = _exit_cfg(profile)
+    min_score = int(cfg.get("trend_reversal_min_score", 75))
+    min_delta = int(cfg.get("trend_reversal_score_delta", 25))
+    min_adx = float(cfg.get("trend_reversal_min_adx", 22))
+    adx = signal.adx or 0.0
+    if adx < min_adx:
+        return None
+
+    side = getattr(position, "position_side", "long") or "long"
+    lev = int(getattr(position, "leverage", 20) or 20)
+    loss_roe = float(cfg.get("stop_loss_roe_pct", -16.0))
+    roe = getattr(position, "roe_pct", None)
+
+    if side == "long":
+        if signal.short_score < min_score:
+            return None
+        if signal.short_score < signal.long_score + min_delta:
+            return None
+        if (signal.trend_4h or signal.trend) != "bearish":
+            return None
+        if (signal.trend_1h or "neutral") == "bullish":
+            return None
+        reason = (
+            f"Reversión bajista confirmada: short_score={signal.short_score} "
+            f"(long={signal.long_score}), ADX={adx:.0f}, 4h bearish — "
+            f"cierre anticipado (ROE actual {roe:+.1f}% si aplica)"
+            if roe is not None
+            else f"Reversión bajista confirmada: short_score={signal.short_score}, "
+            f"ADX={adx:.0f}, 4h bearish — cierre anticipado"
+        )
+        action = DecisionAction.SELL
+    else:
+        if signal.long_score < min_score:
+            return None
+        if signal.long_score < signal.short_score + min_delta:
+            return None
+        if (signal.trend_4h or signal.trend) != "bullish":
+            return None
+        if (signal.trend_1h or "neutral") == "bearish":
+            return None
+        reason = (
+            f"Reversión alcista confirmada: long_score={signal.long_score} "
+            f"(short={signal.short_score}), ADX={adx:.0f}, 4h bullish — "
+            f"cierre anticipado (ROE actual {roe:+.1f}% si aplica)"
+            if roe is not None
+            else f"Reversión alcista confirmada: long_score={signal.long_score}, "
+            f"ADX={adx:.0f}, 4h bullish — cierre anticipado"
+        )
+        action = DecisionAction.BUY
+
+    return TradeProposal(
+        action=action,
+        symbol=position.symbol,
+        amount_pct=100.0,
+        stop_loss_pct=abs(loss_roe) / lev,
+        take_profit_pct=0.0,
+        conviction=signal.short_score if side == "long" else signal.long_score,
+        reasoning=reason,
+        instrument_type=InstrumentType.PERPETUAL,
+        position_side=side,
+        leverage=lev,
+    )
+
+
 def position_trend_aligned(side: str, signal: TechnicalSignal | None) -> bool:
     """True si la tendencia 1h apoya la dirección de la posición."""
     if signal is None:
@@ -38,12 +199,12 @@ def mandatory_close_proposals(
     """
     Cierres obligatorios antes del ciclo.
 
-    - Beneficio: ROE >= take_profit_roe_pct (12% ≈ 10% neto tras fees a 20x).
+    - Beneficio: ROE >= take_profit_roe_pct (24% ≈ 20% neto tras fees a 20x).
     - Pérdida: ROE <= stop_loss_roe_pct — corte incondicional.
     """
     cfg = _exit_cfg(profile)
-    profit_roe = float(cfg.get("take_profit_roe_pct", 12.0))
-    loss_roe = float(cfg.get("stop_loss_roe_pct", -8.0))
+    profit_roe = float(cfg.get("take_profit_roe_pct", 24.0))
+    loss_roe = float(cfg.get("stop_loss_roe_pct", -16.0))
 
     proposals: list[TradeProposal] = []
     for pos in snapshot.positions:
@@ -94,7 +255,7 @@ def roe_take_profit_triggers(
     profile: str,
 ) -> list[tuple[str, float]]:
     """Símbolos con ROE >= objetivo para cierre en risk monitor (entre ciclos IA)."""
-    profit_roe = float(_exit_cfg(profile).get("take_profit_roe_pct", 12.0))
+    profit_roe = float(_exit_cfg(profile).get("take_profit_roe_pct", 24.0))
     triggers: list[tuple[str, float]] = []
     for pos in snapshot.positions:
         if getattr(pos, "instrument_type", "spot") != "perpetual":
@@ -109,7 +270,7 @@ def roe_stop_loss_triggers(
     profile: str,
 ) -> list[tuple[str, float]]:
     """Símbolos con ROE <= stop para corte en risk monitor (entre ciclos IA)."""
-    loss_roe = float(_exit_cfg(profile).get("stop_loss_roe_pct", -8.0))
+    loss_roe = float(_exit_cfg(profile).get("stop_loss_roe_pct", -16.0))
     triggers: list[tuple[str, float]] = []
     for pos in snapshot.positions:
         if getattr(pos, "instrument_type", "spot") != "perpetual":
@@ -129,6 +290,8 @@ def update_trailing_stops(
     Devuelve número de posiciones actualizadas.
     """
     cfg = _exit_cfg(profile)
+    if not cfg.get("trailing_enabled", False):
+        return 0
     activate_roe = float(cfg.get("trailing_activate_roe_pct", 8.0))
     trail_roe = float(cfg.get("trailing_distance_roe_pct", 4.0))
 

@@ -4,6 +4,8 @@ from __future__ import annotations
 CLOSE_REASON_LABELS = {
     "risk_sl": "Stop-loss precio",
     "risk_tp": "Take-profit precio",
+    "trailing_stop": "Trailing stop",
+    "trend_reversal": "Reversión de tendencia",
     "risk_roe_sl": "Stop-loss ROE",
     "risk_roe_tp": "Take-profit ROE",
     "ai_mandatory": "Cierre obligatorio",

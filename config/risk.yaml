@@ -20,25 +20,30 @@ stops:
   use_atr_suggestions: true
 
 signal_engine:
-  min_entry_score: 72
-  min_adx: 22
+  min_entry_score: 60
+  min_adx: 18
+  mtf_core_timeframes: 2
 
 profit_optimization:
   min_tp_fee_multiplier: 2.0
   extreme_all_in_amount_pct: 100.0
 
 exit_rules:
-  take_profit_roe_pct: 12.0
-  stop_loss_roe_pct: -8.0
+  take_profit_roe_pct: 24.0
+  stop_loss_roe_pct: -16.0
+  trailing_enabled: false
   trailing_activate_roe_pct: 8.0
   trailing_distance_roe_pct: 4.0
-  reentry_cooldown_cycles: 1
-  reentry_cooldown_after_loss_cycles: 4
+  reentry_cooldown_cycles: 4
+  reentry_cooldown_after_loss_cycles: 8
   min_hold_cycles: 4
   min_hold_roe_min_pct: -3.0
   min_hold_roe_max_pct: 5.0
   rotation_min_conviction_delta: 25
   rotation_min_roe_cost_pct: 2.0
+  trend_reversal_min_score: 75
+  trend_reversal_score_delta: 25
+  trend_reversal_min_adx: 22
 
 allocation:
   max_crypto_pct: 100.0
@@ -89,8 +94,8 @@ profiles:
     ai_validation:
       conviction_divergence_threshold: 60
       min_conviction_on_divergence: 45
-      min_conviction: 72
-      min_quant_conviction_entry: 72
+      min_conviction: 60
+      min_quant_conviction_entry: 60
     whitelist:
       pairs:
         - BTC/USDT

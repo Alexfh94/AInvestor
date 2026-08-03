@@ -174,8 +174,8 @@ async def run_backtest(symbols: list[str], days: int = 90) -> BacktestResult:
     signal_engine = SignalEngine(profile="extreme")
     risk_cfg = load_risk_config(profile="extreme")
     exit_cfg = risk_cfg.get("exit_rules", {})
-    tp_roe = float(exit_cfg.get("take_profit_roe_pct", 12.0))
-    sl_roe = float(exit_cfg.get("stop_loss_roe_pct", -8.0))
+    tp_roe = float(exit_cfg.get("take_profit_roe_pct", 24.0))
+    sl_roe = float(exit_cfg.get("stop_loss_roe_pct", -16.0))
     leverage = int(risk_cfg.get("derivatives", {}).get("max_leverage", 20))
     fee_rate = float(risk_cfg.get("fees", {}).get("perp_taker_rate", 0.0005))
 

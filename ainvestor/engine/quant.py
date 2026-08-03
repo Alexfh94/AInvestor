@@ -32,7 +32,8 @@ class QuantEngine:
         self.profile = profile
         cfg = load_risk_config(profile=profile)
         signal_cfg = cfg.get("signal_engine", {})
-        self.min_adx = float(signal_cfg.get("min_adx", 22))
+        self.min_adx = float(signal_cfg.get("min_adx", 18))
+        self.mtf_core_timeframes = int(signal_cfg.get("mtf_core_timeframes", 2))
         self.min_bars = self.ema_slow + 5
 
     def analyze(self, symbol: str, ohlcv: list[list]) -> TechnicalSignal:
@@ -91,9 +92,7 @@ class QuantEngine:
 
         trends = [signal.trend_1h, signal.trend_4h, signal.trend_1d]
         non_neutral = [t for t in trends if t and t != "neutral"]
-        signal.mtf_aligned = (
-            len(non_neutral) >= 3 and all(t == non_neutral[0] for t in non_neutral)
-        )
+        signal.mtf_aligned = self._core_mtf_aligned(signal)
 
         long_score, short_score, reason = self._apply_mtf_scoring(
             signal, tf_trends, signal.long_score, signal.short_score
@@ -109,10 +108,23 @@ class QuantEngine:
             and max(long_score, short_score) > 0
         )
 
-        if signal.mtf_aligned and non_neutral:
-            signal.trend = non_neutral[0]
+        if signal.mtf_aligned:
+            signal.trend = signal.trend_1h or signal.trend
 
         return signal
+
+    def _core_mtf_aligned(self, signal: TechnicalSignal) -> bool:
+        """1h y 4h alineados (misma dirección, ninguno neutral)."""
+        t1 = signal.trend_1h
+        t4 = signal.trend_4h
+        if not t1 or not t4 or t1 == "neutral" or t4 == "neutral":
+            return False
+        return t1 == t4
+
+    def _full_mtf_aligned(self, signal: TechnicalSignal) -> bool:
+        trends = [signal.trend_1h, signal.trend_4h, signal.trend_1d]
+        non_neutral = [t for t in trends if t and t != "neutral"]
+        return len(non_neutral) >= 3 and all(t == non_neutral[0] for t in non_neutral)
 
     def analyze_all(self, data: dict[str, list[list]]) -> list[TechnicalSignal]:
         return [self.analyze(symbol, ohlcv) for symbol, ohlcv in data.items()]
@@ -258,7 +270,13 @@ class QuantEngine:
         reasons: list[str] = []
 
         if adx < self.min_adx:
-            return 0, 0, f"ADX {adx:.1f} < {self.min_adx:.0f} (rango)"
+            penalty = 12
+            long_score -= penalty
+            short_score -= penalty
+            reasons.append(f"ADX {adx:.1f} < {self.min_adx:.0f} (rango)")
+        elif adx >= self.min_adx + 5:
+            long_score += 5
+            short_score += 5
 
         if trend == "bullish":
             long_score += 20
@@ -310,29 +328,37 @@ class QuantEngine:
         short_score: int,
     ) -> tuple[int, int, str]:
         reasons = [signal.entry_reason] if signal.entry_reason else []
-        trends = [signal.trend_1h, signal.trend_4h, signal.trend_1d]
-        non_neutral = [t for t in trends if t and t != "neutral"]
 
-        if signal.mtf_aligned and non_neutral:
-            direction = non_neutral[0]
+        if self._full_mtf_aligned(signal):
+            direction = signal.trend_1h or "neutral"
             if direction == "bullish":
                 long_score += 25
-                short_score = max(0, short_score - 30)
+                short_score = max(0, short_score - 25)
                 reasons.append("MTF 3/3 bullish")
-            else:
+            elif direction == "bearish":
                 short_score += 25
-                long_score = max(0, long_score - 30)
+                long_score = max(0, long_score - 25)
                 reasons.append("MTF 3/3 bearish")
+        elif signal.mtf_aligned:
+            direction = signal.trend_1h or "neutral"
+            if direction == "bullish":
+                long_score += 15
+                short_score = max(0, short_score - 15)
+                reasons.append("MTF 1h+4h bullish")
+            elif direction == "bearish":
+                short_score += 15
+                long_score = max(0, long_score - 15)
+                reasons.append("MTF 1h+4h bearish")
         else:
-            long_score = max(0, long_score - 15)
-            short_score = max(0, short_score - 15)
+            long_score = max(0, long_score - 8)
+            short_score = max(0, short_score - 8)
             if signal.trend_4h and signal.trend_1h != signal.trend_4h:
-                long_score = max(0, long_score - 10)
-                short_score = max(0, short_score - 10)
-                reasons.append("1h≠4h")
-            if signal.trend_1d and signal.trend_1h != signal.trend_1d:
                 long_score = max(0, long_score - 8)
                 short_score = max(0, short_score - 8)
+                reasons.append("1h≠4h")
+            if signal.trend_1d and signal.trend_1h != signal.trend_1d:
+                long_score = max(0, long_score - 5)
+                short_score = max(0, short_score - 5)
                 reasons.append("1h≠1d")
 
         long_score = max(0, min(100, long_score))

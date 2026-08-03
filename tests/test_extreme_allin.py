@@ -104,13 +104,13 @@ def test_extreme_requires_all_in(db_session):
 
 
 def test_extreme_auto_adjusts_stop_loss_to_roe_target(db_session):
-    """SL de perps se ajusta a stop_loss_roe_pct/leverage (0.3% precio a 20x)."""
+    """SL de perps se ajusta a stop_loss_roe_pct/leverage (0.8% precio a 20x con -16% ROE)."""
     portfolio = db_session.query(Portfolio).filter(Portfolio.profile == PROFILE_EXTREME).first()
     risk = RiskManager(db_session, profile=PROFILE_EXTREME)
     proposal = _perp_proposal(stop_loss_pct=10.0, leverage=20)
     result = risk.validate_proposal(proposal, _snapshot(portfolio), current_price=50000.0)
     assert result.approved is True
-    assert proposal.stop_loss_pct == pytest.approx(0.4)
+    assert proposal.stop_loss_pct == pytest.approx(0.8)
 
 
 def test_extreme_accepts_all_in_perp(db_session):
