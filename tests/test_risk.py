@@ -534,3 +534,102 @@ def test_perp_fee_rate_uses_futures_rate():
     client = ExchangeClient()
     rate = asyncio.run(client.get_taker_fee_rate("BTC/USDT", "perpetual"))
     assert rate == pytest.approx(0.0005)
+
+
+def _add_close_trade(
+    db_session,
+    *,
+    symbol: str,
+    position_side: str,
+    minutes_ago: int,
+    pnl: float,
+) -> None:
+    from datetime import timedelta
+
+    from ainvestor.db.models import Trade
+    from ainvestor.utils.datetime_utils import app_now
+
+    portfolio = db_session.query(Portfolio).first()
+    side = "sell" if position_side == "long" else "buy"
+    db_session.add(
+        Trade(
+            portfolio_id=portfolio.id,
+            symbol=symbol,
+            side=side,
+            amount=1000.0,
+            price=0.19,
+            value_usdt=190.0,
+            fee=0.1,
+            trade_action="close",
+            position_side=position_side,
+            instrument_type="perpetual",
+            leverage=20,
+            realized_pnl_usdt=pnl,
+            executed_at=app_now() - timedelta(minutes=minutes_ago),
+        )
+    )
+    db_session.commit()
+
+
+def test_reentry_opposite_side_allowed_after_sl_close(db_session):
+    portfolio = db_session.query(Portfolio).first()
+    risk = RiskManager(db_session, profile=PROFILE_EXTREME)
+    _add_close_trade(
+        db_session, symbol="ADA/USDT", position_side="short", minutes_ago=5, pnl=-8.0
+    )
+    proposal = TradeProposal(
+        action=DecisionAction.BUY,
+        symbol="ADA/USDT",
+        amount_pct=100.0,
+        stop_loss_pct=0.8,
+        take_profit_pct=0.0,
+        conviction=80,
+        instrument_type=InstrumentType.PERPETUAL,
+        leverage=20,
+        position_side="long",
+    )
+    reasons = risk._check_reentry_cooldown(proposal, portfolio.id)
+    assert reasons == []
+
+
+def test_reentry_same_side_blocked_within_15_min(db_session):
+    portfolio = db_session.query(Portfolio).first()
+    risk = RiskManager(db_session, profile=PROFILE_EXTREME)
+    _add_close_trade(
+        db_session, symbol="ADA/USDT", position_side="long", minutes_ago=10, pnl=5.0
+    )
+    proposal = TradeProposal(
+        action=DecisionAction.BUY,
+        symbol="ADA/USDT",
+        amount_pct=100.0,
+        stop_loss_pct=0.8,
+        take_profit_pct=0.0,
+        conviction=80,
+        instrument_type=InstrumentType.PERPETUAL,
+        leverage=20,
+        position_side="long",
+    )
+    reasons = risk._check_reentry_cooldown(proposal, portfolio.id)
+    assert len(reasons) == 1
+    assert "cooldown" in reasons[0].lower()
+
+
+def test_reentry_same_side_allowed_after_15_min(db_session):
+    portfolio = db_session.query(Portfolio).first()
+    risk = RiskManager(db_session, profile=PROFILE_EXTREME)
+    _add_close_trade(
+        db_session, symbol="ADA/USDT", position_side="long", minutes_ago=16, pnl=5.0
+    )
+    proposal = TradeProposal(
+        action=DecisionAction.BUY,
+        symbol="ADA/USDT",
+        amount_pct=100.0,
+        stop_loss_pct=0.8,
+        take_profit_pct=0.0,
+        conviction=80,
+        instrument_type=InstrumentType.PERPETUAL,
+        leverage=20,
+        position_side="long",
+    )
+    reasons = risk._check_reentry_cooldown(proposal, portfolio.id)
+    assert reasons == []

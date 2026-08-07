@@ -508,20 +508,21 @@ class RiskManager:
     def _check_reentry_cooldown(
         self, proposal: TradeProposal, portfolio_id: int
     ) -> list[str]:
+        """Bloquea reentrada mismo par+lado; dirección opuesta siempre permitida."""
         exit_cfg = self.config.get("exit_rules", {})
-        cooldown_cycles = int(exit_cfg.get("reentry_cooldown_cycles", 2))
-        loss_cooldown_cycles = int(
-            exit_cfg.get("reentry_cooldown_after_loss_cycles", cooldown_cycles)
+        cooldown_min = int(exit_cfg.get("reentry_cooldown_minutes", 15))
+        loss_cooldown_min = int(
+            exit_cfg.get("reentry_cooldown_after_loss_minutes", cooldown_min)
         )
-        interval = get_profile_ai_cycle_interval(self.profile)
-        max_cycles = max(cooldown_cycles, loss_cooldown_cycles)
-        since = app_now() - timedelta(minutes=interval * max_cycles)
+        lookback = max(cooldown_min, loss_cooldown_min)
+        since = app_now() - timedelta(minutes=lookback)
 
         last_close = (
             self.db.query(Trade)
             .filter(
                 Trade.portfolio_id == portfolio_id,
                 Trade.symbol == proposal.symbol,
+                Trade.position_side == proposal.position_side,
                 Trade.trade_action == "close",
                 Trade.executed_at >= since,
             )
@@ -530,19 +531,18 @@ class RiskManager:
         )
         if last_close is None:
             return []
-        if last_close.position_side != proposal.position_side:
-            return []
 
         was_loss = (last_close.realized_pnl_usdt or 0.0) < 0
-        applicable = loss_cooldown_cycles if was_loss else cooldown_cycles
-        cutoff = app_now() - timedelta(minutes=interval * applicable)
+        applicable = loss_cooldown_min if was_loss else cooldown_min
+        cutoff = app_now() - timedelta(minutes=applicable)
         if last_close.executed_at < cutoff:
             return []
 
+        elapsed = int((app_now() - last_close.executed_at).total_seconds() // 60)
         label = " after loss" if was_loss else ""
         return [
-            f"Re-entry cooldown{label}: {proposal.symbol} {proposal.position_side} closed within "
-            f"{applicable} cycles ({interval * applicable} min)"
+            f"Re-entry cooldown{label}: {proposal.symbol} {proposal.position_side} closed "
+            f"{elapsed} min ago (min {applicable} min)"
         ]
 
     def _check_rotation_edge(

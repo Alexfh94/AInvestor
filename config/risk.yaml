@@ -34,8 +34,8 @@ exit_rules:
   trailing_enabled: false
   trailing_activate_roe_pct: 8.0
   trailing_distance_roe_pct: 4.0
-  reentry_cooldown_cycles: 4
-  reentry_cooldown_after_loss_cycles: 8
+  reentry_cooldown_minutes: 15
+  reentry_cooldown_after_loss_minutes: 15
   min_hold_cycles: 4
   min_hold_roe_min_pct: -3.0
   min_hold_roe_max_pct: 5.0
